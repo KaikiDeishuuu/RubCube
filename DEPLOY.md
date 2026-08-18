@@ -12,11 +12,16 @@
 | Framework preset | None | `vercel.json` 的 `"framework": null` |
 | Install command | `pnpm install --frozen-lockfile` | `vercel.json` |
 | Build command | `pnpm -r build` | `vercel.json` |
-| Output directory | `packages/app/dist` | `vercel.json` |
+| Output directory | `dist`（仓库根目录） | `vercel.json`，且与平台默认值一致 |
 | Node 版本 | `>=22.12` | 根 `package.json` 的 `engines.node` |
 | 包管理器 | pnpm 10.15.0 | 根 `package.json` 的 `packageManager`，经 corepack |
 
 唯一要在面板里确认的是 **Root Directory 保持仓库根目录**（默认值），不要改成 `packages/app`。
+
+产物**输出在仓库根目录的 `dist/`**，不是 `packages/app/dist`。这是刻意的：Vercel 找不到
+`outputDirectory` 时默认就去找根目录下的 `dist`，两者对齐之后，即使 `vercel.json` 因为
+Root Directory 设置不当而没被读到，构建仍然能被正确发布。`packages/app/vite.config.ts` 里用
+`build.outDir: '../../dist'` 实现。
 
 **为什么必须是根目录**：`@rubcube/app` 依赖 `@rubcube/cube-core` 与 `@rubcube/cube-render`
 两个 workspace 包，它们要先 `tsc` 出 `dist/` 才能被打包。`pnpm -r build` 会按依赖拓扑序依次
@@ -48,7 +53,7 @@ pnpm -r typecheck && pnpm -r test && pnpm -r build
 证明不了产物在纯静态托管下能跑。
 
 ```bash
-cd packages/app/dist && python3 -m http.server 5399
+cd dist && python3 -m http.server 5399
 ```
 
 打开 http://127.0.0.1:5399/ ，应当看到 WebGL 渲染的魔方、`SOLVED` 徽章，控制台无报错。
