@@ -1,48 +1,42 @@
-# 部署
+# 部署（Vercel）
 
 产物是**纯静态站点**：4 个文件、约 800 KB，没有后端、没有环境变量、没有客户端路由。
-任何静态托管都能跑，不需要 SPA history fallback（只有一个 `index.html`，也没有 `/tutorial`
-之类的前端路由——那还没实现）。
+只有一个 `index.html`，也没有前端路由，所以不需要 SPA history fallback。
 
-## 三个平台通用的设置
+## 一次性设置
 
-| 项 | 值 |
-| --- | --- |
-| Root directory | 仓库根目录（**不是** `packages/app`） |
-| Build command | `pnpm -r build` |
-| Output directory | `packages/app/dist` |
-| Node 版本 | 由 `.node-version`（Cloudflare Pages / Netlify）与 `engines.node`（Vercel）指定 |
-| 包管理器 | 由根 `package.json` 的 `packageManager` 字段经 corepack 固定为 pnpm 10.15.0 |
+仓库根目录的 `vercel.json` 已经写好了构建配置，连接仓库后**面板里不用手填任何东西**：
 
-**Root directory 必须是仓库根目录。** `@rubcube/app` 依赖 `@rubcube/cube-core` 与
-`@rubcube/cube-render` 两个 workspace 包，它们要先 `tsc` 出 `dist/` 才能被打包。
-`pnpm -r build` 会按依赖拓扑序依次构建 core → render → app；只在 `packages/app` 里跑
-`vite build` 会因为找不到依赖产物而失败。
+| 项 | 值 | 来源 |
+| --- | --- | --- |
+| Framework preset | None | `vercel.json` 的 `"framework": null` |
+| Install command | `pnpm install --frozen-lockfile` | `vercel.json` |
+| Build command | `pnpm -r build` | `vercel.json` |
+| Output directory | `packages/app/dist` | `vercel.json` |
+| Node 版本 | `>=22.12` | 根 `package.json` 的 `engines.node` |
+| 包管理器 | pnpm 10.15.0 | 根 `package.json` 的 `packageManager`，经 corepack |
 
-## 各平台
+唯一要在面板里确认的是 **Root Directory 保持仓库根目录**（默认值），不要改成 `packages/app`。
 
-### Cloudflare Pages
-- Framework preset: **None**
-- 其余按上表填。`_headers` 自动生效。
-
-### Netlify
-- 按上表填。`_headers` 自动生效。
-- 也可以改用 `netlify.toml`，但目前没加——上表三个字段在面板里填一次就够了。
-
-### Vercel
-- Framework preset: **Other**
-- 按上表填。Vercel 不读 `_headers`；它对带内容哈希的 `/assets/*` 默认就是长缓存，
-  `index.html` 默认不缓存，行为与 `_headers` 想要的一致。若之后需要显式控制，再加 `vercel.json`。
+**为什么必须是根目录**：`@rubcube/app` 依赖 `@rubcube/cube-core` 与 `@rubcube/cube-render`
+两个 workspace 包，它们要先 `tsc` 出 `dist/` 才能被打包。`pnpm -r build` 会按依赖拓扑序依次
+构建 core → render → app；只在 `packages/app` 里跑 `vite build` 会因为找不到依赖产物而失败。
 
 ## 缓存策略
 
-`packages/app/public/_headers` 定死两条：
+`vercel.json` 的 `headers` 定死两条：
 
-- `/index.html` — `max-age=0, must-revalidate`
+- `/index.html`（以及 `/`）— `max-age=0, must-revalidate`
 - `/assets/*` — `max-age=31536000, immutable`
 
 `index.html` 是唯一一个**文件名跨构建不变**的文件。它一旦被缓存，就会继续指向已经不存在的
 带哈希资源名，部署后用户看到白屏。`/assets/*` 反过来，每个 URL 的内容永不改变，可以缓存一年。
+
+这两条是显式写出来的，没有依赖平台默认值：`framework` 为 `null` 时 Vercel 不会套用任何框架
+预设的缓存规则。
+
+`packages/app/public/_headers` 里有一份等价规则。Vercel 不读它，留着是为了将来若改用
+Cloudflare Pages 或 Netlify 时缓存行为不变——那两家读这个文件，且 Vite 会把它复制进产物。
 
 ## 部署前自检
 
@@ -50,8 +44,8 @@
 pnpm -r typecheck && pnpm -r test && pnpm -r build
 ```
 
-再用一个最普通的静态服务器验证产物本身（不要用 `vite preview`，它有自己的中间件，
-证明不了产物在纯静态托管下能跑）：
+再用一个最普通的静态服务器验证产物本身。不要用 `vite preview`：它有自己的中间件，
+证明不了产物在纯静态托管下能跑。
 
 ```bash
 cd packages/app/dist && python3 -m http.server 5399
@@ -59,7 +53,13 @@ cd packages/app/dist && python3 -m http.server 5399
 
 打开 http://127.0.0.1:5399/ ，应当看到 WebGL 渲染的魔方、`SOLVED` 徽章，控制台无报错。
 
-## 尚未接入
+## 首次部署后要人工确认的
 
-仓库目前**没有 git remote**，也没有 CI。静态托管平台需要连接一个 Git 仓库才能自动构建；
-先创建远程仓库并推送，再在平台上连接。
+`vercel.json` 的字段是按 Vercel 文档写的，但**本地无法验证平台实际行为**。首次部署后查一次：
+
+```bash
+curl -sI https://<你的域名>/ | grep -i cache-control
+curl -sI https://<你的域名>/assets/<任一带哈希文件> | grep -i cache-control
+```
+
+前者应当是 `max-age=0, must-revalidate`，后者应当是 `max-age=31536000, immutable`。
