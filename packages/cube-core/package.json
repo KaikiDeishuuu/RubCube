@@ -1,0 +1,35 @@
+{
+  "name": "@rubcube/cube-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Zero-dependency Rubik's Cube rules engine shared by browser and Node.js",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./solver": {
+      "development": "./src/solver/index.ts",
+      "types": "./dist/solver/index.d.ts",
+      "import": "./dist/solver/index.js"
+    }
+  },
+  "scripts": {
+    "bench:tables": "tsc -p tsconfig.build.json && node scripts/benchmark-solver-tables.mjs",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json",
+    "coverage": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^3.2.4",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

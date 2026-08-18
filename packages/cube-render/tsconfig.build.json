@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    // Emitting must read sibling packages as built .d.ts, not as source: their
+    // src/ lives outside rootDir and would break declaration emit.
+    "customConditions": [],
+    "rootDir": "src",
+    "outDir": "dist",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "types": []
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["test", "vitest.config.ts"]
+}

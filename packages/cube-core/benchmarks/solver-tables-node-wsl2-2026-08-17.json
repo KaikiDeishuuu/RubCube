@@ -1,0 +1,59 @@
+{
+  "schema": "rubcube-table-benchmark-record-v1",
+  "recordedAt": "2026-08-17T19:21:38.509Z",
+  "command": "corepack pnpm --filter @rubcube/cube-core bench:tables",
+  "scope": "single-machine Node cold-process baseline; not an A/B deployment decision",
+  "runtime": {
+    "node": "v22.23.2",
+    "platform": "linux",
+    "release": "6.18.33.2-microsoft-standard-WSL2",
+    "arch": "x64",
+    "logicalCpuCount": 12,
+    "cpuModel": "Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz"
+  },
+  "tableFingerprint": "sha256:fc65887c94ef3dbd3d50240e32de0255b92661319acb89775e3acba0c91d8e51",
+  "artifact": {
+    "byteLength": 3799756,
+    "checksum": "crc32:facd232e",
+    "sha256": "319936a6f02b58d24c25340e29d08e313ee472656e22ac5acd742046130ba38c",
+    "gzip9Bytes": 2402838,
+    "brotli6Bytes": 1925387
+  },
+  "samples": [
+    {
+      "generateMs": 884.85,
+      "encodeMs": 85.59,
+      "decodeMs": 75.09,
+      "gzip9Ms": 242.91,
+      "brotli6Ms": 200.47
+    },
+    {
+      "generateMs": 856.59,
+      "encodeMs": 82.4,
+      "decodeMs": 71.45,
+      "gzip9Ms": 233.74,
+      "brotli6Ms": 190.91
+    },
+    {
+      "generateMs": 851.36,
+      "encodeMs": 83.86,
+      "decodeMs": 70.91,
+      "gzip9Ms": 234.79,
+      "brotli6Ms": 190.7
+    }
+  ],
+  "medianMs": {
+    "generate": 856.59,
+    "encode": 83.86,
+    "decode": 71.45,
+    "gzip9": 234.79,
+    "brotli6": 190.91
+  },
+  "missingDecisionMeasurements": [
+    "desktop-browser P50/P95",
+    "mobile-browser P50/P95",
+    "IndexedDB atomic save and cache-hit load",
+    "bundled-asset fetch and decode",
+    "Node CI and filesystem cache paths"
+  ]
+}
