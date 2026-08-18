@@ -14,7 +14,7 @@ import {
 } from '../src/drag-controller.js';
 import type { TurnAnimator } from '../src/turn-animator.js';
 import { CUBIE_DESCRIPTORS } from '../src/layout.js';
-import type { CubieVisual } from '../src/types.js';
+import type { CubieVisual, GridPosition } from '../src/types.js';
 
 interface RecordedListener {
   readonly type: string;
@@ -180,91 +180,155 @@ describe('pointer listener placement', () => {
 
     controller.dispose();
   });
+});
 
-  it('routes a locked layer gesture through the injected acceptance gate', () => {
-    const onDocument: RecordedListener[] = [];
-    const onCanvas: RecordedListener[] = [];
-    const record =
-      (into: RecordedListener[]) =>
-      (type: string, listener: (event: PointerEvent) => void, options?: unknown) => {
-        into.push({ type, listener, options });
-      };
-    const canvas = {
-      ownerDocument: {
-        addEventListener: record(onDocument),
-        removeEventListener: vi.fn(),
-      },
-      addEventListener: record(onCanvas),
-      removeEventListener: vi.fn(),
-      getBoundingClientRect: () => ({
-        left: 0,
-        top: 0,
-        width: 500,
-        height: 500,
-      }),
-      setPointerCapture: vi.fn(),
-      hasPointerCapture: () => false,
-      releasePointerCapture: vi.fn(),
-    } as unknown as HTMLCanvasElement;
-    const camera = new PerspectiveCamera(45, 1, 0.1, 100);
-    camera.position.set(0, 0, 5);
-    camera.lookAt(0, 0, 0);
-    camera.updateMatrixWorld(true);
-    camera.updateProjectionMatrix();
 
-    const object = new Mesh(
-      new BoxGeometry(2, 2, 2),
-      new MeshBasicMaterial(),
-    );
-    object.updateMatrixWorld(true);
-    const visual: CubieVisual = {
-      descriptor: CUBIE_DESCRIPTORS[0]!,
-      object,
-      gridPosition: [1, 1, 1],
+interface MountedDrag {
+  readonly acceptedBegin: ReturnType<typeof vi.fn>;
+  readonly directBegin: ReturnType<typeof vi.fn>;
+  readonly setInteractiveAngle: ReturnType<typeof vi.fn>;
+  readonly stopPropagation: ReturnType<typeof vi.fn>;
+  readonly drag: (dx: number, dy: number) => void;
+  readonly teardown: () => void;
+}
+
+/** Mount a controller over a single cubie, camera on +Z looking at the origin. */
+function mountDrag(gridPosition: GridPosition): MountedDrag {
+  const onDocument: RecordedListener[] = [];
+  const onCanvas: RecordedListener[] = [];
+  const record =
+    (into: RecordedListener[]) =>
+    (type: string, listener: (event: PointerEvent) => void, options?: unknown) => {
+      into.push({ type, listener, options });
     };
-    object.userData.cubieVisual = visual;
-    const directBegin = vi.fn(() => true);
-    const setInteractiveAngle = vi.fn();
-    const animator = {
-      isActive: false,
-      beginInteractive: directBegin,
-      setInteractiveAngle,
-      releaseInteractive: vi.fn(),
-      cancelInteractive: vi.fn(),
-    } as unknown as TurnAnimator;
-    const acceptedBegin = vi.fn(() => true);
-    const controller = new LayerDragController(
-      canvas,
-      camera,
-      [visual],
-      animator,
-      { enabled: true },
-      { beginInteractive: acceptedBegin },
-    );
+  const canvas = {
+    ownerDocument: {
+      addEventListener: record(onDocument),
+      removeEventListener: vi.fn(),
+    },
+    addEventListener: record(onCanvas),
+    removeEventListener: vi.fn(),
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 500, height: 500 }),
+    setPointerCapture: vi.fn(),
+    hasPointerCapture: () => false,
+    releasePointerCapture: vi.fn(),
+  } as unknown as HTMLCanvasElement;
+  const camera = new PerspectiveCamera(45, 1, 0.1, 100);
+  camera.position.set(0, 0, 5);
+  camera.lookAt(0, 0, 0);
+  camera.updateMatrixWorld(true);
+  camera.updateProjectionMatrix();
 
-    const pointerdown = onDocument.find((entry) => entry.type === 'pointerdown')!;
-    pointerdown.listener({
+  const object = new Mesh(new BoxGeometry(2, 2, 2), new MeshBasicMaterial());
+  object.updateMatrixWorld(true);
+  const visual: CubieVisual = {
+    descriptor: CUBIE_DESCRIPTORS[0]!,
+    object,
+    gridPosition,
+  };
+  object.userData.cubieVisual = visual;
+
+  const directBegin = vi.fn(() => true);
+  const setInteractiveAngle = vi.fn();
+  const animator = {
+    isActive: false,
+    beginInteractive: directBegin,
+    setInteractiveAngle,
+    releaseInteractive: vi.fn(),
+    cancelInteractive: vi.fn(),
+  } as unknown as TurnAnimator;
+  const acceptedBegin = vi.fn(() => true);
+  const controller = new LayerDragController(
+    canvas,
+    camera,
+    [visual],
+    animator,
+    { enabled: true },
+    { beginInteractive: acceptedBegin },
+  );
+
+  const stopPropagation = vi.fn();
+  const drag = (dx: number, dy: number): void => {
+    onDocument.find((entry) => entry.type === 'pointerdown')!.listener({
       target: canvas,
       button: 0,
       pointerId: 7,
       clientX: 250,
       clientY: 250,
       preventDefault: vi.fn(),
-      stopPropagation: vi.fn(),
+      stopPropagation,
     } as unknown as PointerEvent);
-    const pointermove = onCanvas.find((entry) => entry.type === 'pointermove')!;
-    pointermove.listener({
+    onCanvas.find((entry) => entry.type === 'pointermove')!.listener({
       pointerId: 7,
-      clientX: 290,
-      clientY: 250,
+      clientX: 250 + dx,
+      clientY: 250 + dy,
       preventDefault: vi.fn(),
     } as unknown as PointerEvent);
-
-    expect(acceptedBegin).toHaveBeenCalledTimes(1);
-    expect(directBegin).not.toHaveBeenCalled();
-    expect(setInteractiveAngle).toHaveBeenCalledTimes(1);
+  };
+  const teardown = (): void => {
     controller.dispose();
     object.geometry.dispose();
     object.material.dispose();
+  };
+
+  return { acceptedBegin, directBegin, setInteractiveAngle, stopPropagation, drag, teardown };
+}
+
+describe('layer gesture acceptance', () => {
+  it('routes a locked layer gesture through the injected acceptance gate', () => {
+    const rig = mountDrag([1, 1, 1]);
+    rig.drag(40, 0);
+
+    expect(rig.acceptedBegin).toHaveBeenCalledTimes(1);
+    expect(rig.directBegin).not.toHaveBeenCalled();
+    expect(rig.setInteractiveAngle).toHaveBeenCalledTimes(1);
+    rig.teardown();
+  });
+
+  it('turns a corner sticker on both of its tangents', () => {
+    for (const [dx, dy, face] of [[40, 0, 'U'], [0, 40, 'R']] as const) {
+      const rig = mountDrag([1, 1, 1]);
+      rig.drag(dx, dy);
+      expect(rig.acceptedBegin).toHaveBeenCalledWith(face);
+      expect(rig.setInteractiveAngle.mock.calls[0]![0]).not.toBe(0);
+      rig.teardown();
+    }
+  });
+
+  it('drops an edge drag aimed at the tangent that would need a slice move', () => {
+    // The F sticker of the UF edge turns U when dragged sideways. Dragged
+    // vertically it wants the M slice, which `Face` cannot name, so that
+    // tangent was filtered out at pointerdown. The surviving tangent must not
+    // win by default: locking it opened a command and drove the layer to 0
+    // degrees, swallowing the gesture and blocking input while it settled.
+    const sideways = mountDrag([0, 1, 1]);
+    sideways.drag(40, 0);
+    expect(sideways.acceptedBegin).toHaveBeenCalledWith('U');
+    sideways.teardown();
+
+    const vertical = mountDrag([0, 1, 1]);
+    vertical.drag(0, 40);
+    expect(vertical.acceptedBegin).not.toHaveBeenCalled();
+    expect(vertical.setInteractiveAngle).not.toHaveBeenCalled();
+    vertical.teardown();
+  });
+
+  it('still claims a drag that leans towards the surviving tangent', () => {
+    // 40 across by 30 down is 37 degrees off the usable tangent: inside the gate.
+    const rig = mountDrag([0, 1, 1]);
+    rig.drag(40, 30);
+    expect(rig.acceptedBegin).toHaveBeenCalledWith('U');
+    expect(rig.setInteractiveAngle.mock.calls[0]![0]).not.toBe(0);
+    rig.teardown();
+  });
+
+  it('leaves a centre sticker to the camera instead of claiming it', () => {
+    // Every tangent on a centre rotates a middle slice, so the gesture never
+    // belongs to the drag controller and must reach OrbitControls untouched.
+    const rig = mountDrag([0, 0, 1]);
+    rig.drag(40, 0);
+    expect(rig.stopPropagation).not.toHaveBeenCalled();
+    expect(rig.acceptedBegin).not.toHaveBeenCalled();
+    rig.teardown();
   });
 });

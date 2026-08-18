@@ -17,6 +17,9 @@
   --acid: #b8f34a;
   --acid-soft: rgba(184, 243, 74, 0.12);
   --danger: #ff796f;
+  /* Read by .app-shell and by the stage's height reserve below, so the two
+     cannot drift apart. */
+  --topbar-h: 66px;
 }
 
 * {
@@ -67,7 +70,7 @@ button:disabled {
   height: 100vh;
   height: 100dvh;
   display: grid;
-  grid-template-rows: 66px minmax(0, 1fr);
+  grid-template-rows: var(--topbar-h) minmax(0, 1fr);
   overflow: hidden;
 }
 
@@ -787,7 +790,14 @@ kbd {
 
   .workspace {
     grid-template-columns: 1fr;
-    grid-template-rows: minmax(520px, 66vh) auto;
+    /* A bare px floor wins outright on a short viewport -- a landscape phone
+       asks for 66vh (247px) and is handed 520px, putting the cube below the
+       fold. Capping against the viewport keeps the whole stage on screen at any
+       height; the reserve leaves room for the topbar plus a strip of the panel,
+       so the page still reads as scrollable. The vh line is the fallback for
+       browsers without dvh. */
+    grid-template-rows: min(max(520px, 66vh), calc(100vh - var(--topbar-h) - 30px)) auto;
+    grid-template-rows: min(max(520px, 66dvh), calc(100dvh - var(--topbar-h) - 30px)) auto;
   }
 
   .control-panel {
@@ -808,7 +818,8 @@ kbd {
 
 @media (max-width: 620px) {
   .app-shell {
-    grid-template-rows: 58px auto;
+    --topbar-h: 58px;
+    grid-template-rows: var(--topbar-h) auto;
   }
 
   .topbar {
@@ -825,7 +836,8 @@ kbd {
   }
 
   .workspace {
-    grid-template-rows: minmax(430px, 58vh) auto;
+    grid-template-rows: min(max(430px, 58vh), calc(100vh - var(--topbar-h) - 30px)) auto;
+    grid-template-rows: min(max(430px, 58dvh), calc(100dvh - var(--topbar-h) - 30px)) auto;
   }
 
   .stage-label {
@@ -856,6 +868,14 @@ kbd {
   }
 
   .face-name small {
+    display: none;
+  }
+}
+
+/* Phone-sized *and* no fine pointer: a keyboard cheat sheet with no keyboard to
+   match it. Narrow desktop windows and tablets with a keyboard case keep it. */
+@media (max-width: 620px) and (pointer: coarse) {
+  .keyboard-section {
     display: none;
   }
 }

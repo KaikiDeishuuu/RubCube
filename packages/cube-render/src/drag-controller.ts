@@ -39,10 +39,16 @@ export interface LayerDragControllerOptions {
 }
 
 interface ProjectedTangent {
-  readonly world: Vector3;
   readonly screen: Vector2;
   readonly pixelsPerWorldUnit: number;
-  readonly mapping: LayerDragMapping;
+  /** null when this direction turns a middle slice, which `Face` cannot name. */
+  readonly mapping: LayerDragMapping | null;
+}
+
+type TurnableTangent = ProjectedTangent & { readonly mapping: LayerDragMapping };
+
+function isTurnable(tangent: ProjectedTangent): tangent is TurnableTangent {
+  return tangent.mapping !== null;
 }
 
 interface PendingPointer {
@@ -50,7 +56,7 @@ interface PendingPointer {
   readonly start: Vector2;
   readonly hitPoint: Vector3;
   readonly tangents: readonly ProjectedTangent[];
-  locked: ProjectedTangent | null;
+  locked: TurnableTangent | null;
   radius: number;
 }
 
@@ -200,8 +206,6 @@ export class LayerDragController {
     const tangents: ProjectedTangent[] = [];
     for (const tangent of CARDINALS) {
       if (Math.abs(tangent.dot(faceNormal)) > 0.5) continue;
-      const mapping = mapSurfaceDragToLayer(faceNormal, tangent, cubie.gridPosition);
-      if (mapping === null) continue;
       const projected = projectWorldTangent(
         this.camera,
         intersection.point,
@@ -210,14 +214,19 @@ export class LayerDragController {
         bounds.height,
       );
       if (projected === null) continue;
+      // Slice tangents are kept as decoys rather than dropped. They cannot be
+      // turned, but only a candidate that competes on score can reveal that the
+      // drag was aimed at one, and an edge sticker that drops its slice tangent
+      // outright would lock its one survivor no matter how badly it scored.
       tangents.push({
-        world: tangent.clone(),
         screen: projected.direction,
         pixelsPerWorldUnit: projected.pixelsPerWorldUnit,
-        mapping,
+        mapping: mapSurfaceDragToLayer(faceNormal, tangent, cubie.gridPosition),
       });
     }
-    if (tangents.length === 0) return;
+    // A centre sticker turns nothing in either direction: leave the whole
+    // gesture to the camera rather than capturing it to do nothing.
+    if (!tangents.some(isTurnable)) return;
 
     event.preventDefault();
     // We are still above the canvas in the capture phase, so this prevents the
@@ -254,7 +263,17 @@ export class LayerDragController {
         .map((tangent) => ({ tangent, score: Math.abs(delta.dot(tangent.screen)) }))
         .sort((left, right) => right.score - left.score);
       const selected = ranked[0]?.tangent;
-      if (selected === undefined || !this.beginInteractive(selected.mapping.face)) {
+      // The winner losing to a slice tangent means the drag was aimed at a move
+      // the core cannot make. Claiming it anyway drove the layer to ~0 degrees
+      // and snapped back, swallowing the gesture and blocking input while it
+      // settled. Scoring against a fixed alignment cutoff instead would misjudge
+      // this: a tangent's screen direction is its world direction seen through
+      // the camera, so a perfectly good drag can sit far off any screen axis.
+      if (selected === undefined || !isTurnable(selected)) {
+        this.cancelPending();
+        return;
+      }
+      if (!this.beginInteractive(selected.mapping.face)) {
         this.cancelPending();
         return;
       }
