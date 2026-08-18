@@ -20,6 +20,7 @@ import {
   type EnqueueCommitProvenance,
   type MoveTransportBackend,
   type MoveTransportBackendSink,
+  RETAINED_COMMAND_IDS,
   type QueuedMove,
 } from '../src/transport.js';
 
@@ -219,6 +220,78 @@ function createHarness(options: HarnessOptions = {}): Harness {
   });
   return { dispatcher, backend, events };
 }
+
+describe('CommitDispatcher start gate', () => {
+  it('reopens the gate for work staged from inside pump', () => {
+    // pump is the sole start gate, so anything that reaches backend.enqueue
+    // must still get a pump. Draining once after pump left work handed over but
+    // never started until some unrelated later drain came along.
+    const { dispatcher, backend } = createHarness();
+    backend.pumpAction = () => {
+      backend.pumpAction = null;
+      dispatcher.enqueue([{ face: 'R', turns: 1 }], provenance('staged-from-pump'));
+    };
+
+    dispatcher.enqueue([{ face: 'U', turns: 1 }], provenance('first'));
+
+    expect(backend.enqueueCalls.map((call) => call[0]!.provenance.commandId)).toEqual([
+      'first',
+      'staged-from-pump',
+    ]);
+    // Two gate openings: one for the original command, one for what pump staged.
+    expect(backend.pumpCalls).toBeGreaterThanOrEqual(2);
+    expect(backend.pending).toHaveLength(2);
+
+    backend.commitNext();
+    backend.commitNext();
+    expect(dispatcher.isBusy).toBe(false);
+    expect(dispatcher.isFatal).toBe(false);
+  });
+
+  it('still converts a synchronous commit from pump into a protocol failure', () => {
+    // Reopening the gate must not weaken the guard that makes committing from
+    // inside pump a protocol error.
+    const { dispatcher, backend, events } = createHarness();
+    dispatcher.enqueue([{ face: 'U', turns: 1 }], provenance('sync-commit'));
+    backend.pumpAction = () => {
+      backend.pumpAction = null;
+      backend.commitNext();
+    };
+    dispatcher.enqueue([{ face: 'R', turns: 1 }], provenance('second'));
+
+    expect(dispatcher.isFatal).toBe(true);
+    expect(events.filter(isEnd).map((end) => end.status)).toContain('failed');
+  });
+});
+
+describe('CommitDispatcher command id retention', () => {
+  it('retires old ids but never a live one', () => {
+    const { dispatcher, backend } = createHarness();
+
+    // Accepted and never ended, so it stays live for the whole run.
+    dispatcher.enqueue([{ face: 'U', turns: 1 }], provenance('long-lived'));
+    // Retired without committing, so each one becomes evictable immediately.
+    for (let index = 0; index < RETAINED_COMMAND_IDS + 16; index += 1) {
+      dispatcher.enqueue([{ face: 'R', turns: 1 }], provenance(`bulk-${index}`));
+      backend.endCommand(`bulk-${index}`, 'cancelled');
+    }
+    expect(dispatcher.isFatal).toBe(false);
+
+    // Live ids are skipped by eviction no matter how much traffic passes them.
+    expect(() =>
+      dispatcher.enqueue([{ face: 'F', turns: 1 }], provenance('long-lived')),
+    ).toThrow(/already been used/);
+
+    // A just-retired id is still recognised, so a late end stays tolerated.
+    backend.endCommand(`bulk-${RETAINED_COMMAND_IDS + 15}`, 'cancelled');
+    expect(dispatcher.isFatal).toBe(false);
+
+    // The documented trade-off: an id retired more than the cap ago is no
+    // longer recognised, so a late end for it reads as a protocol error.
+    backend.endCommand('bulk-0', 'cancelled');
+    expect(dispatcher.isFatal).toBe(true);
+  });
+});
 
 describe('CommitDispatcher command acceptance', () => {
   it('treats an empty enqueue as a strict no-op and copies accepted input', () => {

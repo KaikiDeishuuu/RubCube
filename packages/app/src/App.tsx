@@ -500,12 +500,14 @@ function App() {
     store.setLastAction('Reset · solved');
   };
 
-  const submitOnCommandEnter = (event: ReactKeyboardEvent<HTMLInputElement>): void => {
-    if (event.key === 'Enter') return;
-    if (event.key === 'Escape') {
-      event.currentTarget.blur();
-      useCubeStore.getState().setFormulaError(null);
-    }
+  // Enter needs no handler here: the input sits in a form, so the browser's
+  // native submit already routes it to submitFormula.
+  const dismissFormulaOnEscape = (
+    event: ReactKeyboardEvent<HTMLInputElement>,
+  ): void => {
+    if (event.key !== 'Escape') return;
+    event.currentTarget.blur();
+    useCubeStore.getState().setFormulaError(null);
   };
 
   const controlsDisabled =
@@ -606,7 +608,7 @@ function App() {
                   id="move-formula"
                   value={formula}
                   onChange={(event) => useCubeStore.getState().setFormula(event.target.value)}
-                  onKeyDown={submitOnCommandEnter}
+                  onKeyDown={dismissFormulaOnEscape}
                   spellCheck={false}
                   autoCapitalize="characters"
                   autoComplete="off"

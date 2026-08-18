@@ -329,8 +329,12 @@ function assertMoveTable(
       `${name} must contain exactly ${expectedLength} transitions`,
     );
   }
-  for (const coordinate of table) {
-    if (coordinate >= coordinateCount) {
+  // Indexed rather than for-of: this walks 891,780 entries across the six
+  // tables, and the iterator protocol allocates a result object per step.
+  // Measured at ~10ms of a ~880ms generation, so this is about not making a
+  // pure bounds check allocate, not about a startup win.
+  for (let index = 0; index < table.length; index += 1) {
+    if (table[index]! >= coordinateCount) {
       throw new RangeError(`${name} contains an out-of-range transition`);
     }
   }
@@ -511,7 +515,6 @@ function generatePruningTablesWithListener(
   moveTables: SolverMoveTables,
   listener: ProgressListener | null,
 ): SolverPruningTables {
-  validateMoveTables(moveTables);
   const phase1MoveCount = HTM_V1_MOVE_ORDER.length;
   const phase2MoveCount = PHASE2_MOVE_ORDER.length;
   const queue = new Uint32Array(
@@ -586,6 +589,8 @@ export function generatePruningTables(
   moveTables: SolverMoveTables,
   options?: TableGenerationOptions,
 ): SolverPruningTables {
+  // Only the public entry point can receive tables it did not generate.
+  validateMoveTables(moveTables);
   return generatePruningTablesWithListener(moveTables, progressListener(options));
 }
 
@@ -597,6 +602,8 @@ export function generateSolverTables(
   const moveTables = generateMoveTablesWithListener(listener);
   return Object.freeze({
     moveTables,
+    // No validateMoveTables here: generateCoordinateMoveTable already rejects
+    // any transition that escapes its coordinate range as it writes it.
     pruningTables: generatePruningTablesWithListener(moveTables, listener),
   });
 }

@@ -563,7 +563,14 @@ export class TurnAnimator implements MoveTransportBackend {
 
     const provenance = this.active.layers[0]!.provenance;
     this.abortActiveVisual(true);
-    if (this.transportSink !== undefined && provenance !== null) {
+    if (this.transportSink !== undefined) {
+      // Fail loudly rather than degrading to the legacy path. Self-pumping here
+      // would start the next group outside the dispatcher's gate and strand the
+      // drag's command with no terminal event, leaving the transport busy for
+      // good. finishGroup rejects the same missing provenance the same way.
+      if (provenance === null) {
+        throw new Error('Interactive group is missing commit provenance');
+      }
       this.transportSink.endCommand(
         provenance.commandId,
         'cancelled',

@@ -142,6 +142,16 @@ export type DispatchErrorListener = (
 export type RevisionChangeListener = (revision: number) => void;
 export type BusyChangeListener = (isBusy: boolean) => void;
 
+/**
+ * How many retired command ids stay recognisable.
+ *
+ * Both readers of the set look backwards only a short way: a duplicate id is a
+ * caller bug that shows up immediately, and a late command end can only trail
+ * its command by the depth of the work queue. Far enough past that, retaining
+ * an id buys nothing but memory that lives as long as the page.
+ */
+export const RETAINED_COMMAND_IDS = 4_096;
+
 /** Public, renderer-independent playback surface used by the app. */
 export interface MoveTransport {
   readonly isBusy: boolean;
@@ -324,18 +334,14 @@ function movesEqual(left: Move, right: Move): boolean {
 
 function cloneProvenance(provenance: CommitProvenance): CommitProvenance {
   assertProvenance(provenance);
-  if (provenance.intent === 'forward') {
-    return Object.freeze({
-      commandId: provenance.commandId,
-      intent: provenance.intent,
-      origin: provenance.origin,
-    });
-  }
+  // One literal for both union members. Splitting on intent would produce two
+  // byte-identical bodies whose only purpose is to re-narrow what
+  // assertProvenance has already established, so assert the pairing once here.
   return Object.freeze({
     commandId: provenance.commandId,
     intent: provenance.intent,
     origin: provenance.origin,
-  });
+  }) as CommitProvenance;
 }
 
 function cloneDragProvenance(
@@ -434,6 +440,16 @@ export class CommitDispatcher implements MoveTransport {
   private readonly authoritativeListener: DispatchEventListener | undefined;
   private readonly dispatchErrorListener: DispatchErrorListener | undefined;
   private readonly observers = new Set<DispatchEventListener>();
+  /**
+   * Recently accepted command ids, newest last (Set preserves insertion order).
+   *
+   * Two readers: the duplicate-id guard in enqueue/beginInteractive, and
+   * processEnd distinguishing a late end for a command that already finished
+   * from one that never existed. Both only ever look backwards a short way, so
+   * the set is capped rather than retained for the life of the page. Ids still
+   * in liveCommands are never evicted, so a long-running command stays
+   * recognisable no matter how much traffic passes it.
+   */
   private readonly knownCommandIds = new Set<string>();
   private readonly liveCommands = new Map<string, CommandRecord>();
   private readonly workQueue: WorkItem[] = [];
@@ -568,8 +584,8 @@ export class CommitDispatcher implements MoveTransport {
       terminalScheduled: false,
       ended: false,
     };
-    this.knownCommandIds.add(copiedProvenance.commandId);
     this.liveCommands.set(copiedProvenance.commandId, record);
+    this.rememberCommandId(copiedProvenance.commandId);
     this.acceptOperation(
       { kind: 'enqueue', commandId: copiedProvenance.commandId },
       acceptedRevision,
@@ -603,8 +619,8 @@ export class CommitDispatcher implements MoveTransport {
       terminalScheduled: false,
       ended: false,
     };
-    this.knownCommandIds.add(copiedProvenance.commandId);
     this.liveCommands.set(copiedProvenance.commandId, record);
+    this.rememberCommandId(copiedProvenance.commandId);
     this.acceptOperation(
       {
         kind: 'begin-interactive',
@@ -744,6 +760,24 @@ export class CommitDispatcher implements MoveTransport {
     return this.revision;
   }
 
+  /**
+   * Record an accepted id and retire the oldest retired ones past the cap.
+   *
+   * Deleting from a Set while iterating it is well defined, and iteration runs
+   * oldest-first, so this retires exactly the excess. Live ids are skipped
+   * rather than evicted; if every retained id is still live the set simply
+   * stays above the cap, which is bounded by the number of open commands.
+   */
+  private rememberCommandId(commandId: string): void {
+    this.knownCommandIds.add(commandId);
+    if (this.knownCommandIds.size <= RETAINED_COMMAND_IDS) return;
+    for (const candidate of this.knownCommandIds) {
+      if (this.knownCommandIds.size <= RETAINED_COMMAND_IDS) break;
+      if (this.liveCommands.has(candidate)) continue;
+      this.knownCommandIds.delete(candidate);
+    }
+  }
+
   private acceptOperation(
     operation: DeferredOperation,
     acceptedRevision: number,
@@ -802,12 +836,18 @@ export class CommitDispatcher implements MoveTransport {
     if (this.draining) return;
     this.draining = true;
     try {
-      while (!this.fatal && this.workQueue.length > 0) {
-        const work = this.workQueue.shift()!;
-        this.processWork(work);
-      }
+      // Drain to quiescence, open the gate, and repeat. Draining once after the
+      // pump is not enough: work staged during pump() can itself reach
+      // backend.enqueue, and without reopening the gate those moves would sit
+      // unstarted until an unrelated later drain. Both backends make pump() a
+      // guarded no-op once they are running, so the extra passes are free.
+      while (!this.fatal) {
+        while (!this.fatal && this.workQueue.length > 0) {
+          const work = this.workQueue.shift()!;
+          this.processWork(work);
+        }
+        if (this.fatal) break;
 
-      if (!this.fatal) {
         try {
           this.pumping = true;
           this.backend.pump();
@@ -816,12 +856,7 @@ export class CommitDispatcher implements MoveTransport {
         } finally {
           this.pumping = false;
         }
-        // A queued item here can only be a protocol failure reported by the
-        // sink guard above; legitimate backend work resumes from a later tick/task.
-        while (!this.fatal && this.workQueue.length > 0) {
-          const work = this.workQueue.shift()!;
-          this.processWork(work);
-        }
+        if (this.workQueue.length === 0) break;
       }
     } finally {
       this.draining = false;
@@ -1074,7 +1109,7 @@ export class CommitDispatcher implements MoveTransport {
 
     const replace = batch.changes[0]!.move === null;
     if (replace) {
-      if (batch.changes.length !== 1 || batch.changes[0]!.move !== null) {
+      if (batch.changes.length !== 1) {
         throw new Error('A replace batch must contain exactly one move:null change');
       }
       const change = batch.changes[0]!;
