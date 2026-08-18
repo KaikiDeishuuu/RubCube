@@ -126,7 +126,12 @@ describe('slice and face turns agree on whole-cube rotations', () => {
   ])('%s is a whole-cube rotation', (_name, sequence) => {
     const rotated = applyMoves(createSolvedState(), sequence);
     expect(facesAreUniform(rotated)).toBe(true);
-    expect(isSolved(rotated)).toBe(false);
+    // Turned as a whole, so still solved to a player even though it no longer
+    // equals the canonical solved state. facesAreUniform reaches that verdict
+    // through the facelet codec and isSolved through the cubie arrays, so the
+    // two agreeing is a cross-check of both.
+    expect(isSolved(rotated)).toBe(true);
+    expect(statesEqual(rotated, createSolvedState())).toBe(false);
     expect(Array.from(rotated.centers)).not.toEqual([0, 1, 2, 3, 4, 5]);
   });
 
@@ -154,6 +159,33 @@ describe('slice and face turns agree on whole-cube rotations', () => {
       }
     }
     expect(seen.size).toBe(24);
+  });
+});
+
+describe('solvedness ignores which way the cube faces', () => {
+  it('agrees with the facelet codec on every state it is shown', () => {
+    // Two independent readings of the same question: one walks 54 stickers
+    // through the codec, the other compares cubie arrays against the centres.
+    const sequences = [
+      '',
+      'R',
+      'M',
+      "R M' L'",
+      "M E' S2 R U'",
+      "R U R' U'",
+      "R M' L' U E' D'",
+      "M M M M",
+      "R M' L' R M' L' R M' L' R M' L'",
+    ];
+    for (const sequence of sequences) {
+      const state = applyMoves(createSolvedState(), sequence);
+      expect([sequence, isSolved(state)]).toEqual([sequence, facesAreUniform(state)]);
+    }
+  });
+
+  it('still rejects a cube that is merely close', () => {
+    const almost = applyMoves(createSolvedState(), "R M' L' R");
+    expect(isSolved(almost)).toBe(false);
   });
 });
 

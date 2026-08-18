@@ -195,6 +195,29 @@ function centersFormRotation(centers: Uint8Array): boolean {
   );
 }
 
+/**
+ * Sticker face indices for each corner and edge, as centre positions.
+ *
+ * CORNER_NAMES and EDGE_NAMES already spell out the faces a cubie touches, in
+ * sticker order, and a cubie's home position is the position of the same index.
+ * One table therefore answers both questions {@link isSolved} needs: which
+ * faces a position exposes, and which colours a cubie carries.
+ */
+const CENTER_INDEX_OF_FACE: Readonly<Record<string, number>> = Object.freeze(
+  Object.fromEntries(CENTER_NAMES.map((face, index) => [face, index])),
+);
+
+function faceIndices(names: readonly string[]): readonly Uint8Array[] {
+  return Object.freeze(
+    names.map((name) =>
+      Uint8Array.from([...name], (face) => CENTER_INDEX_OF_FACE[face]!),
+    ),
+  );
+}
+
+const CORNER_FACE_INDICES = faceIndices(CORNER_NAMES);
+const EDGE_FACE_INDICES = faceIndices(EDGE_NAMES);
+
 function identityPermutation(length: number): Uint8Array {
   return Uint8Array.from({ length }, (_, index) => index);
 }
@@ -246,7 +269,20 @@ export function statesEqual(left: CubeState, right: CubeState): boolean {
 /** Explicitly named compatibility alias for callers that compare cube states. */
 export const cubeStatesEqual = statesEqual;
 
-/** Exact solved-state check without allocating a reference state. */
+/**
+ * Whether every face shows a single colour, allocating no reference state.
+ *
+ * This is solvedness as a player sees it, not equality with the canonical
+ * solved state: a cube that slice moves have turned as a whole is still solved,
+ * it is just facing a different way. Comparing against the canonical state
+ * instead would call a visibly finished cube unsolved, which became reachable
+ * the moment M/E/S arrived.
+ *
+ * A sticker is right when its colour matches the centre of the face it sits on.
+ * Centre `i` carries colour `i`, so `centers[face]` is that colour's index and
+ * the whole test stays integer comparisons. Checking all 48 stickers subsumes
+ * permutation and orientation together; no separate cp/co/ep/eo pass is needed.
+ */
 export function isSolved(state: CubeState): boolean {
   if (
     state.cp.length !== CORNER_COUNT ||
@@ -258,17 +294,28 @@ export function isSolved(state: CubeState): boolean {
     return false;
   }
 
-  for (let index = 0; index < CORNER_COUNT; index += 1) {
-    if (state.cp[index] !== index || state.co[index] !== 0) return false;
+  for (let position = 0; position < CORNER_COUNT; position += 1) {
+    const positionFaces = CORNER_FACE_INDICES[position]!;
+    const cubieFaces = CORNER_FACE_INDICES[state.cp[position]!];
+    const orientation = state.co[position]!;
+    if (cubieFaces === undefined) return false;
+    for (let sticker = 0; sticker < 3; sticker += 1) {
+      const face = positionFaces[(sticker + orientation) % 3]!;
+      if (state.centers[face] !== cubieFaces[sticker]) return false;
+    }
   }
-  for (let index = 0; index < EDGE_COUNT; index += 1) {
-    if (state.ep[index] !== index || state.eo[index] !== 0) return false;
+
+  for (let position = 0; position < EDGE_COUNT; position += 1) {
+    const positionFaces = EDGE_FACE_INDICES[position]!;
+    const cubieFaces = EDGE_FACE_INDICES[state.ep[position]!];
+    const orientation = state.eo[position]!;
+    if (cubieFaces === undefined) return false;
+    for (let sticker = 0; sticker < 2; sticker += 1) {
+      const face = positionFaces[(sticker + orientation) % 2]!;
+      if (state.centers[face] !== cubieFaces[sticker]) return false;
+    }
   }
-  // Solved means solved in the canonical orientation. A cube left uniform but
-  // turned as a whole by slice moves reports false here.
-  for (let index = 0; index < CENTER_COUNT; index += 1) {
-    if (state.centers[index] !== index) return false;
-  }
+
   return true;
 }
 
