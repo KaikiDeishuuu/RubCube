@@ -943,13 +943,13 @@ describe('CommitDispatcher backend protocol boundaries', () => {
 
   it.each([
     {
-      label: 'non-opposite layers',
+      label: 'layers that share cubies',
       moves: [
         { face: 'R', turns: 1 },
         { face: 'U', turns: 1 },
       ] as const,
       count: 2,
-      error: /opposite layers/iu,
+      error: /disjoint layers/iu,
     },
     {
       label: 'more than two changes',

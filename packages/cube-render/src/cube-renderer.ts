@@ -3,7 +3,7 @@ import {
   cloneState,
   createSolvedState,
   type CubeState,
-  type Face,
+  type Layer,
   type Move,
 } from '@rubcube/cube-core';
 import {
@@ -48,7 +48,7 @@ import type {
 import type { CubeStateChangeListener } from './types.js';
 
 export type InteractiveCommandAcceptor = (
-  face: Face,
+  face: Layer,
   provenance: DragCommitProvenance,
 ) => boolean;
 
@@ -449,7 +449,7 @@ export class CubeRenderer implements MoveTransportBackend {
   }
 
   beginInteractive(
-    face: Face,
+    face: Layer,
     provenance: DragCommitProvenance,
   ): boolean {
     const accepted = this.animator.beginInteractive(face, provenance);
@@ -472,7 +472,7 @@ export class CubeRenderer implements MoveTransportBackend {
     this.requestRender();
   }
 
-  private readonly requestInteractive = (face: Face): boolean => {
+  private readonly requestInteractive = (face: Layer): boolean => {
     if (this.acceptInteractive === undefined) {
       // Canonical mode must never bypass dispatcher command registration.
       if (this.transportSink !== undefined) return false;

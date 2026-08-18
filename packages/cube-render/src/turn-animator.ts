@@ -3,16 +3,17 @@ import {
   assertMove,
   assertValidState,
   cloneState,
-  isFace,
-  oppositeFace,
+  isLayer,
+  isSlice,
+  layersAreDisjoint,
   parseMoves,
   type CubeState,
-  type Face,
+  type Layer,
   type Move,
 } from '@rubcube/cube-core';
 import { Group, type Object3D, type Vector3 } from 'three';
 
-import { faceNormal } from './layout.js';
+import { layerNormal } from './layout.js';
 import { isForwardMoveOrigin } from './transport.js';
 import type {
   CommitProvenance,
@@ -33,8 +34,11 @@ const SNAP_THRESHOLD = Math.PI / 6;
 const BASE_DURATION_SECONDS = 0.12;
 
 /**
- * Only opposite faces move disjoint cubie sets, so three concurrent layers are
- * impossible: any third face shares cubies with at least one of the first two.
+ * Cap on layers turning at once, not a geometric limit.
+ *
+ * With face turns alone only opposite faces were disjoint, so two was all the
+ * cube allowed. Slices break that: R, M and L are pairwise disjoint, so three
+ * are now possible. Two stays the cap until a third pivot earns its keep.
  */
 const MAX_CONCURRENT_LAYERS = 2;
 
@@ -59,7 +63,9 @@ export interface TurnAnimatorOptions {
 type ActiveMode = 'queue' | 'interactive' | 'settling';
 
 interface ActiveLayer {
-  readonly face: Face;
+  readonly face: Layer;
+  /** Offset along `axis` that a cubie must sit at to belong to this layer. */
+  readonly slab: 0 | 1;
   readonly axis: Vector3;
   readonly pivot: Group;
   move: Move | null;
@@ -92,7 +98,7 @@ interface ActiveGroup {
 }
 
 interface PendingInteractive {
-  readonly face: Face;
+  readonly face: Layer;
   readonly provenance: DragCommitProvenance;
 }
 
@@ -414,13 +420,13 @@ export class TurnAnimator implements MoveTransportBackend {
   }
 
   beginInteractive(
-    face: Face,
+    face: Layer,
     provenance: DragCommitProvenance,
   ): boolean;
   /** @deprecated Transitional pre-transport overload. */
-  beginInteractive(face: Face): boolean;
+  beginInteractive(face: Layer): boolean;
   beginInteractive(
-    face: Face,
+    face: Layer,
     provenance?: DragCommitProvenance,
   ): boolean {
     if (
@@ -431,8 +437,8 @@ export class TurnAnimator implements MoveTransportBackend {
     ) {
       return false;
     }
-    if (!isFace(face)) {
-      throw new TypeError('Interactive turn face must be U, D, L, R, F, or B');
+    if (!isLayer(face)) {
+      throw new TypeError('Interactive turn layer must be one of U/D/L/R/F/B/M/E/S');
     }
     if (this.transportSink !== undefined && provenance === undefined) {
       throw new TypeError('A transport-backed drag requires provenance');
@@ -665,15 +671,18 @@ export class TurnAnimator implements MoveTransportBackend {
     return layers.every(
       (layer) =>
         layer.provenance?.commandId === next.provenance.commandId &&
-        oppositeFace(layer.face) === next.move.face,
+        layersAreDisjoint(layer.face, next.move.face),
     );
   }
 
-  private createLayer(face: Face, pivotIndex: number): ActiveLayer {
+  private createLayer(face: Layer, pivotIndex: number): ActiveLayer {
     return {
       face,
-      // faceNormal already returns a fresh unit vector along a cardinal axis.
-      axis: faceNormal(face),
+      // layerNormal already returns a fresh unit vector along a cardinal axis.
+      axis: layerNormal(face),
+      // How far along the axis this layer sits: the outer layer a face names,
+      // or the middle one a slice names.
+      slab: isSlice(face) ? 0 : 1,
       pivot: this.pivots[pivotIndex]!,
       move: null,
       provenance: null,
@@ -693,8 +702,8 @@ export class TurnAnimator implements MoveTransportBackend {
     for (const cubie of this.cubies) {
       const [x, y, z] = cubie.gridPosition;
       for (const layer of layers) {
-        const { axis } = layer;
-        if (axis.x * x + axis.y * y + axis.z * z > 0.5) {
+        const { axis, slab } = layer;
+        if (Math.abs(axis.x * x + axis.y * y + axis.z * z - slab) < 0.5) {
           layer.pivot.attach(cubie.object);
           // Concurrent layers are disjoint by construction; stopping here keeps
           // that an invariant of this loop rather than a fact about the caller.

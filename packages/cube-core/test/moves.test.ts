@@ -7,7 +7,7 @@ import {
   applyMoves,
   applyMovesInPlace,
   assertMove,
-  faceAxis,
+  layerAxis,
   invertMove,
   invertMoves,
   isMove,
@@ -46,7 +46,7 @@ describe('HTM notation', () => {
     expect(parseMoves('   ')).toEqual([]);
   });
 
-  it.each(['r', 'U3', "R2'", 'M', 'Uw', 'x', 'R,U', 'R’'])(
+  it.each(['r', 'U3', "R2'", 'm', 'Uw', 'x', 'R,U', 'R’'])(
     'rejects invalid token %s',
     (token) => {
       expect(() => parseMoves(`U ${token}`)).toThrow(MoveParseError);
@@ -70,9 +70,9 @@ describe('HTM notation', () => {
 
 describe('move helpers', () => {
   it('maps axes and opposite faces', () => {
-    expect(faceAxis('U')).toBe('UD');
-    expect(faceAxis('R')).toBe('LR');
-    expect(faceAxis('B')).toBe('FB');
+    expect(layerAxis('U')).toBe('UD');
+    expect(layerAxis('R')).toBe('LR');
+    expect(layerAxis('B')).toBe('FB');
     expect(oppositeFace('U')).toBe('D');
     expect(oppositeFace('L')).toBe('R');
     expect(oppositeFace('F')).toBe('B');

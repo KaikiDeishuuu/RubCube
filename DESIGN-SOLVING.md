@@ -158,6 +158,20 @@ Undo 是这里唯一的刚需——练习公式时没有 Undo 基本没法用。
 
 对应 DESIGN.md §8 的 **M3a–b**。已落地的 M3a 位于 `cube-core/src/solver/{constants,coordinates,tables,artifact,types}.ts`；M3b 将新增 `kociemba.ts`。k≤9 真最优搜索是 M3c，计划单独放在 `cube-core/src/optimal/bidirectional.ts`；当前只有 `/solver` package subpath 已导出，Node/bench-only 的 `/optimal` 尚未落地。
 
+### 2.0 前置条件：中心块必须已归位
+
+求解器的走法集合是 18 个面转，而**面转永远不动中心块**。玩家用 M/E/S 拧过之后，`state.centers` 可能落在 24 种整体朝向的任意一种；这时 `cp/co/ep/eo` 即使全部归位，六个面也不是单色的，而任何面转序列都无法把中心转回去。
+
+因此 M3b 的入口必须先处理朝向，不能直接把任意 `CubeState` 喂给两阶段搜索：
+
+1. 从 `state.centers` 求出整体朝向 `r`（24 选一，中心排布与朝向一一对应）。
+2. 用 `r⁻¹` 把整个状态旋回标准朝向，再送进搜索。
+3. 把解里的每个面字母按 `r` 重标号，得到在玩家当前朝向下可直接播放的解。
+
+第 3 步不能省：在旋正后的坐标系里求出的 `R` 对玩家而言可能是 `F`。另一种等价做法是把目标态从"标准复原态"改成"`r` 作用后的复原态"，但那要改坐标与剪枝表的目标索引，代价远大于两次重标号。
+
+打乱不受影响：`generateRandomMoves` 与随机状态打乱都只产出 `FaceMove`、只生成 `centers` 为恒等的状态（见 DESIGN.md §3.2），所以基准评测路径上 `r` 恒为单位元。
+
 ### 2.1 两阶段的思想
 
 定义两个群：

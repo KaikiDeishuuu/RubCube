@@ -1,4 +1,4 @@
-import { ALL_HTM_MOVES, faceAxis, type Move } from './moves.js';
+import { ALL_HTM_MOVES, layerAxis, type FaceMove } from './moves.js';
 import {
   mulberry32,
   randomInt,
@@ -6,6 +6,7 @@ import {
   type SeedOrRandomSource,
 } from './rng.js';
 import {
+  CENTER_COUNT,
   CORNER_COUNT,
   EDGE_COUNT,
   type CubeState,
@@ -19,7 +20,7 @@ function toRandomSource(seedOrRandom: SeedOrRandomSource): RandomSource {
     : mulberry32(seedOrRandom);
 }
 
-function isAllowedNextMove(moves: readonly Move[], candidate: Move): boolean {
+function isAllowedNextMove(moves: readonly FaceMove[], candidate: FaceMove): boolean {
   const previous = moves[moves.length - 1];
 
   // Combining two adjacent turns of one face would make the scramble longer
@@ -30,11 +31,11 @@ function isAllowedNextMove(moves: readonly Move[], candidate: Move): boolean {
 
   const twoBack = moves[moves.length - 2];
   if (previous !== undefined && twoBack !== undefined) {
-    const axis = faceAxis(candidate.face);
+    const axis = layerAxis(candidate.face);
 
     // Forbid patterns such as R L R. Two opposite-face moves are fine, but a
     // third move on that axis is an avoidable reorder of commuting moves.
-    if (faceAxis(previous.face) === axis && faceAxis(twoBack.face) === axis) {
+    if (layerAxis(previous.face) === axis && layerAxis(twoBack.face) === axis) {
       return false;
     }
   }
@@ -106,6 +107,10 @@ export function generateRandomState(
     co: randomOrientations(CORNER_COUNT, 3, random),
     ep,
     eo: randomOrientations(EDGE_COUNT, 2, random),
+    // Random-state scrambles stay in the canonical orientation. Rotating the
+    // whole cube adds no difficulty, and a scramble the solver cannot consume
+    // would be worse than useless.
+    centers: Uint8Array.from({ length: CENTER_COUNT }, (_, index) => index),
   };
 }
 
@@ -119,13 +124,13 @@ export function generateRandomState(
 export function generateRandomMoves(
   length: number = DEFAULT_RANDOM_MOVE_COUNT,
   seedOrRandom: SeedOrRandomSource = Math.random,
-): Move[] {
+): FaceMove[] {
   if (!Number.isSafeInteger(length) || length < 0) {
     throw new RangeError('length must be a non-negative safe integer');
   }
 
   const random = toRandomSource(seedOrRandom);
-  const moves: Move[] = [];
+  const moves: FaceMove[] = [];
 
   while (moves.length < length) {
     const candidates = ALL_HTM_MOVES.filter((candidate) =>

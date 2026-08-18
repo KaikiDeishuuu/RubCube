@@ -4,6 +4,7 @@ import {
   EDGE_NAMES,
   type CubeState,
   type Face,
+  type Layer,
 } from '@rubcube/cube-core';
 import { Matrix4, Quaternion, Vector3 } from 'three';
 
@@ -57,6 +58,24 @@ export const EDGE_POSITION_FACES: readonly PositionFaces[] = Object.freeze([
 
 /** Center identities follow the external facelet convention rather than move-axis order. */
 export const CENTER_FACES = Object.freeze(['U', 'R', 'F', 'D', 'L', 'B'] as const);
+
+/** Each center position exposes exactly one sticker, on its own face. */
+export const CENTER_POSITION_FACES: readonly PositionFaces[] = Object.freeze(
+  CENTER_FACES.map((face) => Object.freeze([face] as const)),
+);
+
+/**
+ * The axis a layer turns about, as an outward normal.
+ *
+ * A slice borrows the normal of the face it follows, which is what makes a
+ * positive turn of M read the same way as a positive turn of L.
+ */
+const LAYER_NORMALS: Readonly<Record<Layer, DiscreteVector>> = Object.freeze({
+  ...FACE_NORMALS,
+  M: FACE_NORMALS.L,
+  E: FACE_NORMALS.D,
+  S: FACE_NORMALS.F,
+});
 
 function asGridCoordinate(value: number): GridCoordinate {
   if (value === -1 || value === 0 || value === 1) return value;
@@ -279,6 +298,8 @@ function buildRotationTable(
 
 const CORNER_ORIENTATIONS = 3;
 const EDGE_ORIENTATIONS = 2;
+/** A center shows one sticker, so its position fixes its pose up to spin. */
+const CENTER_ORIENTATIONS = 1;
 const CORNER_ROTATION_INDEX = buildRotationTable(
   CORNER_DESCRIPTORS,
   CORNER_POSITION_FACES,
@@ -288,6 +309,11 @@ const EDGE_ROTATION_INDEX = buildRotationTable(
   EDGE_DESCRIPTORS,
   EDGE_POSITION_FACES,
   EDGE_ORIENTATIONS,
+);
+const CENTER_ROTATION_INDEX = buildRotationTable(
+  CENTER_DESCRIPTORS,
+  CENTER_POSITION_FACES,
+  CENTER_ORIENTATIONS,
 );
 
 function cornerQuaternion(cubie: number, position: number, orientation: number): Quaternion {
@@ -302,9 +328,19 @@ function edgeQuaternion(cubie: number, position: number, orientation: number): Q
   return CUBE_ROTATIONS[EDGE_ROTATION_INDEX[slot]!]!.quaternion.clone();
 }
 
+function centerQuaternion(cubie: number, position: number): Quaternion {
+  const slot = cubie * CENTER_POSITION_FACES.length + position;
+  return CUBE_ROTATIONS[CENTER_ROTATION_INDEX[slot]!]!.quaternion.clone();
+}
+
 /** Return a fresh Three.js normal in the x=R, y=U, z=F coordinate system. */
 export function faceNormal(face: Face): Vector3 {
   return toVector3(FACE_NORMALS[face]);
+}
+
+/** As {@link faceNormal}, but a slice resolves to the face it follows. */
+export function layerNormal(layer: Layer): Vector3 {
+  return toVector3(LAYER_NORMALS[layer]);
 }
 
 /**
@@ -336,13 +372,16 @@ export function getCubiePoses(state: CubeState): CubiePose[] {
     };
   }
 
+  // Centers used to be pinned to their home pose. Slice moves rotate four of
+  // them at a time, so they are read from the state like every other cubie --
+  // pinning them here would snap a finished slice turn straight back.
   const centerOffset = edgeOffset + EDGE_DESCRIPTORS.length;
-  for (let center = 0; center < CENTER_DESCRIPTORS.length; center += 1) {
-    const descriptor = CENTER_DESCRIPTORS[center]!;
-    poses[centerOffset + center] = {
-      descriptor,
-      gridPosition: descriptor.homePosition,
-      quaternion: new Quaternion(),
+  for (let position = 0; position < CENTER_POSITION_FACES.length; position += 1) {
+    const cubie = state.centers[position]!;
+    poses[centerOffset + cubie] = {
+      descriptor: CENTER_DESCRIPTORS[cubie]!,
+      gridPosition: CENTER_GRID_POSITIONS[position]!,
+      quaternion: centerQuaternion(cubie, position),
     };
   }
 

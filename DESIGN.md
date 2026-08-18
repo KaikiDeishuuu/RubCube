@@ -105,30 +105,45 @@ export interface CubeState {
   ep: Uint8Array;   // len 12
   /** 棱块朝向：0/1 */
   eo: Uint8Array;   // len 12
+  /** 中心块置换：centers[i] = 当前占据中心位置 i 的中心块编号 (0..5)，URFDLB 序 */
+  centers: Uint8Array;   // len 6
 }
 ```
 
-中心块固定（白 U / 绿 F 的标准配色），所以状态空间是标准的 43,252,003,274,489,856,000 个。
+**中心块是状态的一部分，不是常量。** 六个外层面转确实不动中心，但 M/E/S 切片走法每步搬动四个中心（见 §3.2）。若不建模，`toFacelets` 会给出错误的中心颜色，渲染层的 `syncVisuals` 也会在切片动画提交的瞬间把中心弹回原位。
 
-**合法性校验**（三个不变量，必须有单元测试）：
+中心块只可能落在 24 种整体朝向之一，因此**去掉整体朝向后**的状态空间仍是标准的 43,252,003,274,489,856,000 个；把朝向计入则为 24 倍。
+
+**合法性校验**（必须有单元测试）：
 
 1. `cp` 和 `ep` 各自是合法置换
 2. `sum(co) % 3 === 0`（角朝向守恒）
 3. `sum(eo) % 2 === 0`（棱朝向守恒）
-4. `sgn(cp) === sgn(ep)`（置换奇偶性一致）
+4. `sgn(cp) ^ sgn(ep) ^ sgn(centers) === 0`（三者奇偶性之和为偶）
+5. `centers` 是 24 种整体朝向之一：对位仍是对位，且三轴保持右手性
 
-任何来自外部（模型输出、URL 分享、存档）的状态都必须过这四关。
+第 4 条在只有面转时退化为 `sgn(cp) === sgn(ep)`，因为那时 `sgn(centers)` 恒为 0。面转是角、棱各一个 4-循环（奇/奇/偶），切片是棱、中心各一个 4-循环（偶/奇/奇），两者都让三个奇偶性之和保持为偶。第 5 条排除的是镜像排布：它满足置换与对位检查，却不是任何走法序列能到达的。
+
+任何来自外部（模型输出、URL 分享、存档）的状态都必须过这五关。
 
 ### 3.2 Move 表示
 
 ```ts
 export type Face = 'U' | 'D' | 'L' | 'R' | 'F' | 'B';
-export type Move = { face: Face; turns: 1 | 2 | 3 };  // 3 === 逆时针(')
+export type Slice = 'M' | 'E' | 'S';
+export type Layer = Face | Slice;
+export type Move = { face: Layer; turns: 1 | 2 | 3 };  // 3 === 逆时针(')
+/** 只含面转的 Move。求解器与打乱只接受这个。 */
+export type FaceMove = Move & { face: Face };
 ```
 
 内部用 `turns: 1|2|3`（顺时针 90° 的次数），避免负数取模的边界 bug。
 
-**评测中只允许 18 个 HTM 面转**（`U U' U2 D D' D2 L L' L2 R R' R2 F F' F2 B B' B2`）。宽层（`Uw`/`u`）、中层（`M E S`）、整体旋转（`x y z`）在游戏里支持，但**在评测输入输出中禁用**——它们的记号约定在不同社区有分歧，会污染指标。
+切片跟随它同名的面：`M` 跟 `L`、`E` 跟 `D`、`S` 跟 `F`。九个层的转换表由几何推导生成，而不是手写：生成器把每个 cubie 的位置与贴纸法向绕层轴旋转后读回位置和朝向；同一段代码跑六个面时逐字节复现既有的面转表，这才是三张切片表可信的依据。
+
+**评测中只允许 18 个 HTM 面转**（`U U' U2 D D' D2 L L' L2 R R' R2 F F' F2 B B' B2`）。中层（`M E S`）在游戏里支持——拖拽中心块和棱块的"另一个方向"都会转出切片——但**在评测输入输出中禁用**；宽层（`Uw`/`u`）与整体旋转（`x y z`）尚未实现。它们的记号约定在不同社区有分歧，会污染指标。
+
+这个边界由类型系统把守而不是靠约定：`ALL_HTM_MOVES`、`generateRandomMoves` 与求解器坐标都以 `FaceMove` 为准，切片进不去。整体旋转可以用切片和面转合成（`x = R M' L'`、`y = U E' D'`、`z = F S B'`），单元测试用这三条恒等式反过来校验切片表。
 
 解析器必须严格：非法 token 抛错并被计入 `invalid_move_rate` 指标，绝不静默忽略。
 
@@ -253,7 +268,7 @@ function ease(t: number, entry: number, exit: number): number {
 
 选取规则以**动画组**为单位：前面没有已衔接的组时 `entry = 2`，否则 `entry = 1`；创建该组时队列仍有后续步骤则 `exit = 1`，否则 `exit = 0`。因此孤立组是 `(2, 0)`，已知序列的首组是 `(2, 1)`，中间组是 `(1, 1)`，尾组是 `(1, 0)`。`R U R' U'` 的中间两组归一化进度是精确线性的，不会在每个接缝人为归零。
 
-**曲线在组创建后冻结。** 动画已开始后新调用的 `enqueue` 只会进入后续队列，不会中途改写当前组的 `exit`，否则会使已播放的角度跳变。所以分两次调用 `enqueue('R')` 和 `enqueue('L')` 不会后补成并发；要利用序列缓动或对面层并发，调用者应一次批量入队。
+**曲线在组创建后冻结。** 动画已开始后新调用的 `enqueue` 只会进入后续队列，不会中途改写当前组的 `exit`，否则会使已播放的角度跳变。所以分两次调用 `enqueue('R')` 和 `enqueue('L')` 不会后补成并发；要利用序列缓动或并发层，调用者应一次批量入队。
 
 队列转层的时长：
 
@@ -292,18 +307,20 @@ exit = 0
 
 ### 4.4 并发转层
 
-**如果两步涉及的小方块集合不相交，就可以并行播放。** `QueuedMove` / `CommitProvenance` 的完整定义见 DESIGN-SOLVING.md §1.2。在当前 3×3 且 `Move` 只包含六个外层面转的前提下，只有对面层满足这个条件 —— `U` 和 `D`、`R` 和 `L`、`F` 和 `B`：
+**如果两步涉及的小方块集合不相交，就可以并行播放。** `QueuedMove` / `CommitProvenance` 的完整定义见 DESIGN-SOLVING.md §1.2。在 3×3 上，两层不相交**当且仅当它们在同一轴上且不是同一层**。加入 M/E/S 之后每条轴有三层，所以判定不再是"对面"，而是"同轴且不同层"：
 
 ```ts
 canOverlap(a: QueuedMove, b: QueuedMove): boolean {
   return a.provenance.commandId === b.provenance.commandId
-    && oppositeFace(a.move.face) === b.move.face;
+    && layersAreDisjoint(a.move.face, b.move.face);
 }
 ```
 
-由此可证**并发上限是 2**：任意第三个面必然与前两个之一共享 cubie。
+`layersAreDisjoint` 在 cube-core 内实现为 `left !== right && layerAxis(left) === layerAxis(right)`；这是本节此前预留的"改为比较实际 cubie 集合"的落地形式——在 3×3 上同轴异层与 cubie 集合不相交是等价的，用轴比较就不必真的枚举 cubie。
 
-这个判定只在**新组从已知队列取步骤时**执行：先取队首，只有紧跟的第二步既属于同一个 `commandId`、又是对面层才一起取出。不同命令永不共享 `ActiveGroup`，否则按命令取消就没有原子边界。不跳过中间 move 去找后面可并发的层，也不把动画开始后才入队的 move 追加到当前组。将来支持宽层、中层或整体旋转后，不能沿用 `oppositeFace`；要改为比较实际 cubie 集合。
+**几何上限因此从 2 升到 3**：`R`、`M`、`L` 两两不相交，可以同时播放。但 `MAX_CONCURRENT_LAYERS` 目前仍是 2，这是一个**实现上的取舍而非几何事实**：第三个 pivot 要多一套 attach/detach 与提交路径，在真实队列里三层同轴连续出现又很少见。改动这个常数时必须同步放宽 `CommitBatch` 的两步校验（见 §4.5）。
+
+这个判定只在**新组从已知队列取步骤时**执行：先取队首，只有紧跟的第二步既属于同一个 `commandId`、又与之不相交才一起取出。不同命令永不共享 `ActiveGroup`，否则按命令取消就没有原子边界。不跳过中间 move 去找后面可并发的层，也不把动画开始后才入队的 move 追加到当前组。将来支持宽层（`Rw`）或整体旋转（`x/y/z`）后，同轴判定仍然成立，但宽层与同轴的窄层会重叠，届时要退回到真正的 cubie 集合比较。
 
 关键实现约束：**同时播放的层共用一个时钟，一起开始、一起结束。**
 
@@ -317,11 +334,11 @@ interface ActiveGroup {
 }
 ```
 
-每层都用共享的 `progress = elapsed / duration` 和同一条 Hermite 曲线插值自己的 `startAngle → targetAngle`。因此 90° 和 180° 对面层可以同时到达；代价是它们的实际角速度不同，这是上节已接受的折中。
+每层都用共享的 `progress = elapsed / duration` 和同一条 Hermite 曲线插值自己的 `startAngle → targetAngle`。因此 90° 和 180° 的并发层可以同时到达；代价是它们的实际角速度不同，这是上节已接受的折中。
 
 这不是为了整齐，是为了正确性。如果两层各走各的时钟，先结束的那个要 `applyMove` 并调 `syncVisuals` 从整数状态重建全部 26 个 cubie 的变换 —— 而另一层的 9 个 cubie 此刻还挂在 pivot 底下，`syncVisuals` 写进去的是它们的**局部**变换，pivot 的旋转会被重复叠加一次。共用时钟让这个时刻根本不存在。
 
-顺带也解决了提交顺序：两层同时结束，就在同一个 tick 里按队列顺序依次 apply。**逻辑状态仍然严格按顺序 apply，只有视觉是重叠的。**（对面层的 move 本来就可交换，最终状态与顺序无关，但 `CommitBatch.changes` 的 move 序列必须和用户请求的一致。）
+顺带也解决了提交顺序：两层同时结束，就在同一个 tick 里按队列顺序依次 apply。**逻辑状态仍然严格按顺序 apply，只有视觉是重叠的。**（不相交层的 move 本来就可交换，最终状态与顺序无关，但 `CommitBatch.changes` 的 move 序列必须和用户请求的一致。）
 
 并发组的完成是一个不可重入打断的提交事务，顺序固定为：
 
@@ -383,7 +400,7 @@ dispatcher 在接受任意非空 enqueue 或 drag begin 时，先登记 `command
 
 fallback 不得在一次同步调用里耗尽整个公式/倒带。它每次最多提交一个大小为 1 的 batch，随后用 macrotask 或下一帧让出事件循环，再检查 cancel/replace 和队列；因此几百步回放也可在 batch 边界取消。WebGL 与 fallback 可以有不同墙钟节奏；同一组没有中断的命令必须得到相同最终状态、历史和 end 状态，`isBusy` 也采用相同定义。
 
-取消只保证保留**当前 backend 已完整提交的原子 batch 前缀**，不能保证对观察时机敏感的逐 move 前缀跨 backend 完全相同：WebGL 的对面层组可一次原子提交 2 步，fallback 则一次只提交 1 步。因此在“首个 batch observer 中取消 `R L U`”这个刻意依赖 batch 边界的场景里，WebGL 报告 `cancelled/2`，fallback 报告 `cancelled/1`；二者都不得拆开或撤回已经发布的 batch，`committedMoves` 必须如实报告。若产品将来需要“恰好第 N 个逻辑 move 后取消”的跨 backend 确定性，必须新增按 move index 的调度协议，不能用墙钟或 observer 次数冒充。
+取消只保证保留**当前 backend 已完整提交的原子 batch 前缀**，不能保证对观察时机敏感的逐 move 前缀跨 backend 完全相同：WebGL 的并发层组可一次原子提交 2 步，fallback 则一次只提交 1 步。因此在“首个 batch observer 中取消 `R L U`”这个刻意依赖 batch 边界的场景里，WebGL 报告 `cancelled/2`，fallback 报告 `cancelled/1`；二者都不得拆开或撤回已经发布的 batch，`committedMoves` 必须如实报告。若产品将来需要“恰好第 N 个逻辑 move 后取消”的跨 backend 确定性，必须新增按 move index 的调度协议，不能用墙钟或 observer 次数冒充。
 
 `reducedMotion` 下不并发：没有动画可以重叠，串行也保住了"每帧一步"的契约。
 

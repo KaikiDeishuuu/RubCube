@@ -31,11 +31,28 @@ export const EDGE_NAMES = Object.freeze([
   'BR',
 ] as const);
 
+/**
+ * Center cubie order, matching the URFDLB facelet convention.
+ *
+ * Centers only became part of the state when slice moves arrived: face turns
+ * leave all six fixed, but M, E and S each rotate four of them.
+ */
+export const CENTER_NAMES = Object.freeze([
+  'U',
+  'R',
+  'F',
+  'D',
+  'L',
+  'B',
+] as const);
+
 export const CORNER_COUNT = CORNER_NAMES.length;
 export const EDGE_COUNT = EDGE_NAMES.length;
+export const CENTER_COUNT = CENTER_NAMES.length;
 
 export type CornerName = (typeof CORNER_NAMES)[number];
 export type EdgeName = (typeof EDGE_NAMES)[number];
+export type CenterName = (typeof CENTER_NAMES)[number];
 
 /** The authoritative, cubie-level representation of a 3x3 cube. */
 export interface CubeState {
@@ -47,6 +64,8 @@ export interface CubeState {
   ep: Uint8Array;
   /** Edge orientation at each position: 0 or 1. */
   eo: Uint8Array;
+  /** centers[i] is the center cubie occupying center position i (0..5). */
+  centers: Uint8Array;
 }
 
 export type CubeStateComponent = keyof CubeState;
@@ -55,6 +74,10 @@ export type PermutationComponent = 'cp' | 'ep';
 export type CubeStateValidationIssue =
   | {
       readonly code: 'INVALID_STATE_TYPE';
+      readonly message: string;
+    }
+  | {
+      readonly code: 'INVALID_CENTER_ROTATION';
       readonly message: string;
     }
   | {
@@ -99,6 +122,7 @@ export type CubeStateValidationIssue =
       readonly code: 'PERMUTATION_PARITY_MISMATCH';
       readonly cornerParity: 0 | 1;
       readonly edgeParity: 0 | 1;
+      readonly centerParity: 0 | 1;
       readonly message: string;
     };
 
@@ -125,7 +149,51 @@ const COMPONENT_SPECS: readonly ComponentSpec[] = [
   { component: 'co', length: CORNER_COUNT, maximum: 2 },
   { component: 'ep', length: EDGE_COUNT, maximum: EDGE_COUNT - 1 },
   { component: 'eo', length: EDGE_COUNT, maximum: 1 },
+  { component: 'centers', length: CENTER_COUNT, maximum: CENTER_COUNT - 1 },
 ];
+
+/** Axis components of each center's home normal, in CENTER_NAMES order. */
+const CENTER_NORMALS: readonly (readonly [number, number, number])[] = Object.freeze([
+  Object.freeze([0, 1, 0] as const),
+  Object.freeze([1, 0, 0] as const),
+  Object.freeze([0, 0, 1] as const),
+  Object.freeze([0, -1, 0] as const),
+  Object.freeze([-1, 0, 0] as const),
+  Object.freeze([0, 0, -1] as const),
+]);
+
+/** CENTER_NAMES pairs each face with its opposite exactly three apart. */
+const OPPOSITE_CENTER_OFFSET = CENTER_COUNT / 2;
+
+/**
+ * Whether `centers` is one of the 24 orientations, not just any permutation.
+ *
+ * Only a whole-cube rotation can rearrange centers, so opposite positions must
+ * still hold opposite cubies and the axes must keep their handedness. A
+ * mirrored arrangement satisfies both the permutation and the opposite-pair
+ * checks while being unreachable by any sequence of moves, so the handedness
+ * test is what makes this exact rather than merely necessary.
+ */
+function centersFormRotation(centers: Uint8Array): boolean {
+  if (centers.length !== CENTER_COUNT) return false;
+
+  for (let position = 0; position < OPPOSITE_CENTER_OFFSET; position += 1) {
+    const cubie = centers[position]!;
+    if (cubie >= CENTER_COUNT) return false;
+    const opposite = centers[position + OPPOSITE_CENTER_OFFSET]!;
+    if (opposite !== (cubie + OPPOSITE_CENTER_OFFSET) % CENTER_COUNT) return false;
+  }
+
+  const up = CENTER_NORMALS[centers[0]!]!;
+  const right = CENTER_NORMALS[centers[1]!]!;
+  const front = CENTER_NORMALS[centers[2]!]!;
+  // right x up lands on front for a proper rotation; a reflection flips it.
+  return (
+    right[1] * up[2] - right[2] * up[1] === front[0] &&
+    right[2] * up[0] - right[0] * up[2] === front[1] &&
+    right[0] * up[1] - right[1] * up[0] === front[2]
+  );
+}
 
 function identityPermutation(length: number): Uint8Array {
   return Uint8Array.from({ length }, (_, index) => index);
@@ -138,6 +206,7 @@ export function createSolvedState(): CubeState {
     co: new Uint8Array(CORNER_COUNT),
     ep: identityPermutation(EDGE_COUNT),
     eo: new Uint8Array(EDGE_COUNT),
+    centers: identityPermutation(CENTER_COUNT),
   };
 }
 
@@ -148,6 +217,7 @@ export function cloneState(state: CubeState): CubeState {
     co: state.co.slice(),
     ep: state.ep.slice(),
     eo: state.eo.slice(),
+    centers: state.centers.slice(),
   };
 }
 
@@ -168,7 +238,8 @@ export function statesEqual(left: CubeState, right: CubeState): boolean {
     (arraysEqual(left.cp, right.cp) &&
       arraysEqual(left.co, right.co) &&
       arraysEqual(left.ep, right.ep) &&
-      arraysEqual(left.eo, right.eo))
+      arraysEqual(left.eo, right.eo) &&
+      arraysEqual(left.centers, right.centers))
   );
 }
 
@@ -181,7 +252,8 @@ export function isSolved(state: CubeState): boolean {
     state.cp.length !== CORNER_COUNT ||
     state.co.length !== CORNER_COUNT ||
     state.ep.length !== EDGE_COUNT ||
-    state.eo.length !== EDGE_COUNT
+    state.eo.length !== EDGE_COUNT ||
+    state.centers.length !== CENTER_COUNT
   ) {
     return false;
   }
@@ -191,6 +263,11 @@ export function isSolved(state: CubeState): boolean {
   }
   for (let index = 0; index < EDGE_COUNT; index += 1) {
     if (state.ep[index] !== index || state.eo[index] !== 0) return false;
+  }
+  // Solved means solved in the canonical orientation. A cube left uniform but
+  // turned as a whole by slice moves reports false here.
+  for (let index = 0; index < CENTER_COUNT; index += 1) {
+    if (state.centers[index] !== index) return false;
   }
   return true;
 }
@@ -280,7 +357,7 @@ const EDGE_PERMUTATION_MASK = (1 << EDGE_COUNT) - 1;
  */
 function isPhysicallyValid(state: unknown): state is CubeState {
   if (typeof state !== 'object' || state === null) return false;
-  const { cp, co, ep, eo } = state as Partial<CubeState>;
+  const { cp, co, ep, eo, centers } = state as Partial<CubeState>;
 
   if (
     !(cp instanceof Uint8Array) ||
@@ -290,7 +367,10 @@ function isPhysicallyValid(state: unknown): state is CubeState {
     !(ep instanceof Uint8Array) ||
     ep.length !== EDGE_COUNT ||
     !(eo instanceof Uint8Array) ||
-    eo.length !== EDGE_COUNT
+    eo.length !== EDGE_COUNT ||
+    !(centers instanceof Uint8Array) ||
+    centers.length !== CENTER_COUNT ||
+    !centersFormRotation(centers)
   ) {
     return false;
   }
@@ -321,7 +401,14 @@ function isPhysicallyValid(state: unknown): state is CubeState {
   }
   if (edgeSeen !== EDGE_PERMUTATION_MASK || (flip & 1) !== 0) return false;
 
-  return permutationParity(cp) === permutationParity(ep);
+  // A face turn is a 4-cycle on both corners and edges and leaves the centres
+  // alone; a slice turn is a 4-cycle on edges and centres and leaves the
+  // corners alone. Either way an odd number of the three flips, so the sum of
+  // the parities stays even. Before slices existed the centre term was always
+  // zero and this read as corner parity equals edge parity.
+  return (
+    (permutationParity(cp) ^ permutationParity(ep) ^ permutationParity(centers)) === 0
+  );
 }
 
 /**
@@ -350,6 +437,7 @@ export function validateState(state: unknown): readonly CubeStateValidationIssue
     co: false,
     ep: false,
     eo: false,
+    centers: false,
   };
 
   for (const spec of COMPONENT_SPECS) {
@@ -434,15 +522,28 @@ export function validateState(state: unknown): readonly CubeStateValidationIssue
     }
   }
 
-  if (structurallyValid.cp && structurallyValid.ep) {
+  if (structurallyValid.centers && !centersFormRotation(values.centers!)) {
+    issues.push({
+      code: 'INVALID_CENTER_ROTATION',
+      message:
+        'centers must be one of the 24 whole-cube orientations: opposite ' +
+        'positions must hold opposite centers, with the axes right-handed',
+    });
+  }
+
+  if (structurallyValid.cp && structurallyValid.ep && structurallyValid.centers) {
     const cornerParity = permutationParity(values.cp!);
     const edgeParity = permutationParity(values.ep!);
-    if (cornerParity !== edgeParity) {
+    const centerParity = permutationParity(values.centers!);
+    if ((cornerParity ^ edgeParity ^ centerParity) !== 0) {
       issues.push({
         code: 'PERMUTATION_PARITY_MISMATCH',
         cornerParity,
         edgeParity,
-        message: `corner parity (${cornerParity}) must equal edge parity (${edgeParity})`,
+        centerParity,
+        message:
+          `corner (${cornerParity}), edge (${edgeParity}) and centre ` +
+          `(${centerParity}) parities must sum to even`,
       });
     }
   }

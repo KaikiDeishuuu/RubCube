@@ -3,11 +3,11 @@ import {
   assertMove,
   assertValidState,
   cloneState,
-  isFace,
-  oppositeFace,
+  isLayer,
+  layersAreDisjoint,
   statesEqual,
   type CubeState,
-  type Face,
+  type Layer,
   type Move,
 } from '@rubcube/cube-core';
 
@@ -157,7 +157,7 @@ export interface MoveTransport {
   readonly isBusy: boolean;
   readonly commandRevision: number;
   enqueue(moves: readonly Move[], provenance: EnqueueCommitProvenance): boolean;
-  beginInteractive(face: Face, provenance: DragCommitProvenance): boolean;
+  beginInteractive(face: Layer, provenance: DragCommitProvenance): boolean;
   replaceState(state: CubeState): void;
   cancelPlayback(reason: string): void;
 }
@@ -193,7 +193,7 @@ export interface MoveTransportBackend {
   readonly isBusy: boolean;
   enqueue(moves: readonly QueuedMove[]): void;
   /** Admit but do not start the drag; `pump` remains the sole start gate. */
-  beginInteractive(face: Face, provenance: DragCommitProvenance): boolean;
+  beginInteractive(face: Layer, provenance: DragCommitProvenance): boolean;
   replaceState(state: CubeState): void;
   cancelPlayback(reason: string): void;
   pump(): void;
@@ -228,7 +228,7 @@ interface CommandRecord {
   readonly kind: 'queue' | 'drag';
   readonly provenance: CommitProvenance;
   readonly moves: readonly Move[];
-  readonly dragFace: Face | null;
+  readonly dragFace: Layer | null;
   readonly acceptedRevision: number;
   committedMoves: number;
   terminalScheduled: boolean;
@@ -594,13 +594,13 @@ export class CommitDispatcher implements MoveTransport {
   }
 
   beginInteractive(
-    face: Face,
+    face: Layer,
     provenance: DragCommitProvenance,
   ): boolean {
     // A physical pointer drag cannot wait behind playback or an event barrier.
     // Busy rejection is a true no-op: no ID reservation, revision, or end event.
     if (this.fatal || this.isBusy) return false;
-    if (!isFace(face)) {
+    if (!isLayer(face)) {
       throw new TypeError('Interactive face must be U, D, L, R, F, or B');
     }
     const copiedProvenance = cloneDragProvenance(provenance);
@@ -1154,9 +1154,9 @@ export class CommitDispatcher implements MoveTransport {
     }
     if (
       moveChanges.length === 2 &&
-      oppositeFace(moveChanges[0]!.move.face) !== moveChanges[1]!.move.face
+      !layersAreDisjoint(moveChanges[0]!.move.face, moveChanges[1]!.move.face)
     ) {
-      throw new Error('A two-move CommitBatch must contain opposite layers');
+      throw new Error('A two-move CommitBatch must contain disjoint layers');
     }
     if (record.kind === 'drag') {
       if (

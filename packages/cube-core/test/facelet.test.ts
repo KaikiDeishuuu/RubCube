@@ -29,6 +29,7 @@ describe('facelet codec', () => {
       co: new Uint8Array([1, 2, 0, 0, 0, 0, 0, 0]),
       ep: new Uint8Array([1, 2, 0, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
       eo: new Uint8Array([1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+      centers: new Uint8Array([0, 1, 2, 3, 4, 5]),
     };
 
     const encoded = toFacelets(state);
@@ -109,5 +110,6 @@ function toComparableState(state: CubeState): Record<keyof CubeState, number[]> 
     co: Array.from(state.co),
     ep: Array.from(state.ep),
     eo: Array.from(state.eo),
+    centers: Array.from(state.centers),
   };
 }

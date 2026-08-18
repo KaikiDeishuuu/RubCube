@@ -1,4 +1,4 @@
-import { assertValidState, type CubeState } from './state.js';
+import { assertValidState, CENTER_COUNT, type CubeState } from './state.js';
 
 export type FaceletColor = 'U' | 'R' | 'F' | 'D' | 'L' | 'B';
 
@@ -86,8 +86,11 @@ export function toFacelets(state: CubeState): string {
 /** Encoding half of {@link toFacelets}, for callers that already validated. */
 function encodeFacelets(state: CubeState): string {
   const facelets = new Array<string>(FACELET_COUNT);
-  for (const [index, color] of CENTERS) {
-    facelets[index] = color;
+  // Centers are state, not a constant: slice moves rotate four of them at a
+  // time, so which colour sits in the middle of a face is a fact about the
+  // cube rather than about the notation.
+  for (let position = 0; position < CENTER_COUNT; position += 1) {
+    facelets[CENTERS[position]![0]] = FACELET_COLORS[state.centers[position]!]!;
   }
 
   for (let position = 0; position < CORNER_FACELETS.length; position += 1) {
@@ -125,6 +128,12 @@ export function fromFacelets(facelets: string): CubeState {
   const co = new Uint8Array(CORNER_FACELETS.length);
   const ep = new Uint8Array(EDGE_FACELETS.length);
   const eo = new Uint8Array(EDGE_FACELETS.length);
+  const centers = new Uint8Array(CENTER_COUNT);
+
+  for (let position = 0; position < CENTER_COUNT; position += 1) {
+    const color = facelets[CENTERS[position]![0]] as FaceletColor;
+    centers[position] = FACELET_COLORS.indexOf(color);
+  }
 
   for (let position = 0; position < CORNER_FACELETS.length; position += 1) {
     const positionFacelets = CORNER_FACELETS[position]!;
@@ -191,7 +200,7 @@ export function fromFacelets(facelets: string): CubeState {
     eo[position] = orientation;
   }
 
-  const state: CubeState = { cp, co, ep, eo };
+  const state: CubeState = { cp, co, ep, eo, centers };
   try {
     assertValidState(state);
   } catch (error) {
@@ -235,9 +244,15 @@ function validateFaceletText(facelets: string): void {
     }
   }
 
-  for (const [index, color] of CENTERS) {
-    if (facelets[index] !== color) {
-      throw new Error(`Invalid facelet center at index ${index}: expected ${color}`);
+  // Which colour sits on which face is now free, but the six centers still
+  // have to be six different colours. Whether that arrangement is one a real
+  // cube can reach is settled later, by assertValidState.
+  const seenCenters = new Set<string>();
+  for (const [index] of CENTERS) {
+    const color = facelets[index]!;
+    if (seenCenters.has(color)) {
+      throw new Error(`Invalid facelet centers: ${color} appears on two faces`);
     }
+    seenCenters.add(color);
   }
 }

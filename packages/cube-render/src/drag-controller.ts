@@ -1,4 +1,4 @@
-import type { Face } from '@rubcube/cube-core';
+import type { Layer, Slice } from '@rubcube/cube-core';
 import {
   Camera,
   Raycaster,
@@ -24,7 +24,7 @@ export interface CameraControlsLike {
 }
 
 export interface LayerDragMapping {
-  readonly face: Face;
+  readonly face: Layer;
   /** Outward normal of the selected face/layer. */
   readonly outwardAxis: Vector3;
   /** Converts positive motion along `tangent` to angle about `outwardAxis`. */
@@ -35,20 +35,13 @@ export interface LayerDragControllerOptions {
   readonly requestRender?: () => void;
   readonly lockThresholdPx?: number;
   /** Command acceptance gate; the renderer routes this through CommitDispatcher. */
-  readonly beginInteractive?: (face: Face) => boolean;
+  readonly beginInteractive?: (face: Layer) => boolean;
 }
 
 interface ProjectedTangent {
   readonly screen: Vector2;
   readonly pixelsPerWorldUnit: number;
-  /** null when this direction turns a middle slice, which `Face` cannot name. */
-  readonly mapping: LayerDragMapping | null;
-}
-
-type TurnableTangent = ProjectedTangent & { readonly mapping: LayerDragMapping };
-
-function isTurnable(tangent: ProjectedTangent): tangent is TurnableTangent {
-  return tangent.mapping !== null;
+  readonly mapping: LayerDragMapping;
 }
 
 interface PendingPointer {
@@ -56,7 +49,7 @@ interface PendingPointer {
   readonly start: Vector2;
   readonly hitPoint: Vector3;
   readonly tangents: readonly ProjectedTangent[];
-  locked: TurnableTangent | null;
+  locked: ProjectedTangent | null;
   radius: number;
 }
 
@@ -71,7 +64,15 @@ function snapCardinal(vector: Vector3): Vector3 {
   return result;
 }
 
-function faceFromOutwardNormal(normal: Vector3): Face {
+/** The middle layer on each axis, with the outward normal it turns about. */
+const SLICE_AXES: readonly { readonly slice: Slice; readonly outward: Vector3 }[] =
+  Object.freeze([
+    Object.freeze({ slice: 'M' as const, outward: new Vector3(-1, 0, 0) }),
+    Object.freeze({ slice: 'E' as const, outward: new Vector3(0, -1, 0) }),
+    Object.freeze({ slice: 'S' as const, outward: new Vector3(0, 0, 1) }),
+  ]);
+
+function faceFromOutwardNormal(normal: Vector3): Layer {
   if (normal.x > 0.5) return 'R';
   if (normal.x < -0.5) return 'L';
   if (normal.y > 0.5) return 'U';
@@ -80,7 +81,7 @@ function faceFromOutwardNormal(normal: Vector3): Face {
   return 'B';
 }
 
-/** Map a surface tangent drag to the outer layer it rotates. */
+/** Map a surface tangent drag to the layer it rotates. */
 export function mapSurfaceDragToLayer(
   faceNormal: Vector3,
   tangent: Vector3,
@@ -95,7 +96,23 @@ export function mapSurfaceDragToLayer(
     rotationAxis.x * gridPosition[0] +
     rotationAxis.y * gridPosition[1] +
     rotationAxis.z * gridPosition[2];
-  if (Math.abs(layerCoordinate) < 0.5) return null;
+  if (Math.abs(layerCoordinate) < 0.5) {
+    // The cubie sits on the rotation axis, so no outer layer contains it: this
+    // is the middle slice. Centres used to fall through to the camera here and
+    // edges had one direction that could not be expressed at all.
+    const axisIndex = CARDINALS.findIndex(
+      (cardinal) => Math.abs(rotationAxis.dot(cardinal)) > 0.5,
+    );
+    const slice = SLICE_AXES[axisIndex];
+    if (slice === undefined) return null;
+    return {
+      face: slice.slice,
+      outwardAxis: slice.outward.clone(),
+      // A slice turns with the face it follows, so a drag that would turn the
+      // near face one way turns the slice the same way.
+      angleSign: rotationAxis.dot(slice.outward) < 0 ? -1 : 1,
+    };
+  }
 
   const angleSign = layerCoordinate < 0 ? -1 : 1;
   const outwardAxis = snapCardinal(rotationAxis.multiplyScalar(angleSign));
@@ -139,7 +156,7 @@ export class LayerDragController {
   private readonly raycaster = new Raycaster();
   private readonly pointerNdc = new Vector2();
   private readonly requestRender: () => void;
-  private readonly beginInteractive: (face: Face) => boolean;
+  private readonly beginInteractive: (face: Layer) => boolean;
   private readonly lockThresholdPx: number;
   private readonly ownerDocument: Document;
   private pending: PendingPointer | null = null;
@@ -214,19 +231,15 @@ export class LayerDragController {
         bounds.height,
       );
       if (projected === null) continue;
-      // Slice tangents are kept as decoys rather than dropped. They cannot be
-      // turned, but only a candidate that competes on score can reveal that the
-      // drag was aimed at one, and an edge sticker that drops its slice tangent
-      // outright would lock its one survivor no matter how badly it scored.
+      const mapping = mapSurfaceDragToLayer(faceNormal, tangent, cubie.gridPosition);
+      if (mapping === null) continue;
       tangents.push({
         screen: projected.direction,
         pixelsPerWorldUnit: projected.pixelsPerWorldUnit,
-        mapping: mapSurfaceDragToLayer(faceNormal, tangent, cubie.gridPosition),
+        mapping,
       });
     }
-    // A centre sticker turns nothing in either direction: leave the whole
-    // gesture to the camera rather than capturing it to do nothing.
-    if (!tangents.some(isTurnable)) return;
+    if (tangents.length === 0) return;
 
     event.preventDefault();
     // We are still above the canvas in the capture phase, so this prevents the
@@ -263,17 +276,7 @@ export class LayerDragController {
         .map((tangent) => ({ tangent, score: Math.abs(delta.dot(tangent.screen)) }))
         .sort((left, right) => right.score - left.score);
       const selected = ranked[0]?.tangent;
-      // The winner losing to a slice tangent means the drag was aimed at a move
-      // the core cannot make. Claiming it anyway drove the layer to ~0 degrees
-      // and snapped back, swallowing the gesture and blocking input while it
-      // settled. Scoring against a fixed alignment cutoff instead would misjudge
-      // this: a tangent's screen direction is its world direction seen through
-      // the camera, so a perfectly good drag can sit far off any screen axis.
-      if (selected === undefined || !isTurnable(selected)) {
-        this.cancelPending();
-        return;
-      }
-      if (!this.beginInteractive(selected.mapping.face)) {
+      if (selected === undefined || !this.beginInteractive(selected.mapping.face)) {
         this.cancelPending();
         return;
       }

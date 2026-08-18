@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { faceAxis, serializeMoves } from '../src/moves.js';
+import { layerAxis, serializeMoves } from '../src/moves.js';
 import { fromFacelets, toFacelets } from '../src/facelet.js';
 import { mulberry32, normalizeSeed, randomInt } from '../src/rng.js';
 import {
@@ -113,9 +113,9 @@ describe('generateRandomMoves', () => {
         expect(moves[index]?.face).not.toBe(moves[index - 1]?.face);
 
         if (index >= 2) {
-          const currentAxis = faceAxis(moves[index]!.face);
-          const previousAxis = faceAxis(moves[index - 1]!.face);
-          const twoBackAxis = faceAxis(moves[index - 2]!.face);
+          const currentAxis = layerAxis(moves[index]!.face);
+          const previousAxis = layerAxis(moves[index - 1]!.face);
+          const twoBackAxis = layerAxis(moves[index - 2]!.face);
           expect(
             currentAxis === previousAxis && previousAxis === twoBackAxis,
           ).toBe(false);

@@ -575,7 +575,7 @@ function App() {
 
           <div className="stage-label stage-label--bottom">
             <span className="interaction-copy">
-              {renderMode === 'fallback' ? '2D MODE · USE CONTROLS' : 'DRAG A FACE · ORBIT THE SCENE'}
+              {renderMode === 'fallback' ? '2D MODE · USE CONTROLS' : 'DRAG ANY STICKER · ORBIT THE SCENE'}
             </span>
             <span className={solved ? 'cube-badge cube-badge--solved' : 'cube-badge'}>
               <i /> {solved ? 'SOLVED' : 'MIXED'}

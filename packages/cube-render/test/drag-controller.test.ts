@@ -94,13 +94,25 @@ describe('surface drag mapping', () => {
     expect(mapping?.angleSign).toBe(1);
   });
 
-  it('rejects a middle slice and a tangent parallel to the hit normal', () => {
-    expect(
-      mapSurfaceDragToLayer(new Vector3(0, 1, 0), new Vector3(1, 0, 0), [1, 1, 0]),
-    ).toBeNull();
+  it('rejects only a tangent parallel to the hit normal', () => {
     expect(
       mapSurfaceDragToLayer(new Vector3(0, 1, 0), new Vector3(0, 1, 0), [1, 1, 1]),
     ).toBeNull();
+  });
+
+  it('maps a cubie on the rotation axis to the slice that contains it', () => {
+    // The U sticker of the UR edge, dragged towards the back: the rotation axis
+    // runs through the cubie, so no outer layer holds it and the S slice does.
+    expect(
+      mapSurfaceDragToLayer(new Vector3(0, 1, 0), new Vector3(1, 0, 0), [1, 1, 0]),
+    ).toMatchObject({ face: 'S' });
+    // Every centre sticker is on its own axis in both directions.
+    expect(
+      mapSurfaceDragToLayer(new Vector3(0, 1, 0), new Vector3(1, 0, 0), [0, 1, 0]),
+    ).toMatchObject({ face: 'S' });
+    expect(
+      mapSurfaceDragToLayer(new Vector3(0, 1, 0), new Vector3(0, 0, 1), [0, 1, 0]),
+    ).toMatchObject({ face: 'M' });
   });
 });
 
@@ -295,40 +307,35 @@ describe('layer gesture acceptance', () => {
     }
   });
 
-  it('drops an edge drag aimed at the tangent that would need a slice move', () => {
+  it('turns an edge sticker both ways, the second onto a slice', () => {
     // The F sticker of the UF edge turns U when dragged sideways. Dragged
-    // vertically it wants the M slice, which `Face` cannot name, so that
-    // tangent was filtered out at pointerdown. The surviving tangent must not
-    // win by default: locking it opened a command and drove the layer to 0
-    // degrees, swallowing the gesture and blocking input while it settled.
+    // vertically no outer layer holds the cubie, so it turns the M slice --
+    // before slices existed this direction produced nothing at all.
     const sideways = mountDrag([0, 1, 1]);
     sideways.drag(40, 0);
     expect(sideways.acceptedBegin).toHaveBeenCalledWith('U');
+    expect(sideways.setInteractiveAngle.mock.calls[0]![0]).not.toBe(0);
     sideways.teardown();
 
     const vertical = mountDrag([0, 1, 1]);
     vertical.drag(0, 40);
-    expect(vertical.acceptedBegin).not.toHaveBeenCalled();
-    expect(vertical.setInteractiveAngle).not.toHaveBeenCalled();
+    expect(vertical.acceptedBegin).toHaveBeenCalledWith('M');
+    expect(vertical.setInteractiveAngle.mock.calls[0]![0]).not.toBe(0);
     vertical.teardown();
   });
 
-  it('still claims a drag that leans towards the surviving tangent', () => {
-    // 40 across by 30 down is 37 degrees off the usable tangent: inside the gate.
-    const rig = mountDrag([0, 1, 1]);
-    rig.drag(40, 30);
-    expect(rig.acceptedBegin).toHaveBeenCalledWith('U');
-    expect(rig.setInteractiveAngle.mock.calls[0]![0]).not.toBe(0);
-    rig.teardown();
-  });
+  it('turns a slice from a centre sticker rather than orbiting the camera', () => {
+    // Centres were the one dead zone left: every tangent on them runs along the
+    // rotation axis, so the gesture used to fall through to OrbitControls.
+    const horizontal = mountDrag([0, 0, 1]);
+    horizontal.drag(40, 0);
+    expect(horizontal.stopPropagation).toHaveBeenCalled();
+    expect(horizontal.acceptedBegin).toHaveBeenCalledWith('E');
+    horizontal.teardown();
 
-  it('leaves a centre sticker to the camera instead of claiming it', () => {
-    // Every tangent on a centre rotates a middle slice, so the gesture never
-    // belongs to the drag controller and must reach OrbitControls untouched.
-    const rig = mountDrag([0, 0, 1]);
-    rig.drag(40, 0);
-    expect(rig.stopPropagation).not.toHaveBeenCalled();
-    expect(rig.acceptedBegin).not.toHaveBeenCalled();
-    rig.teardown();
+    const vertical = mountDrag([0, 0, 1]);
+    vertical.drag(0, 40);
+    expect(vertical.acceptedBegin).toHaveBeenCalledWith('M');
+    vertical.teardown();
   });
 });
