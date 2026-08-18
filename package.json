@@ -4,6 +4,9 @@
   "private": true,
   "description": "A web Rubik's Cube game and LLM spatial-reasoning benchmark",
   "packageManager": "pnpm@10.15.0",
+  "engines": {
+    "node": ">=22.12"
+  },
   "scripts": {
     "build": "pnpm -r build",
     "test": "pnpm -r test",

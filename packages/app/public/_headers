@@ -1,0 +1,14 @@
+# Honoured by Cloudflare Pages and Netlify. Vite copies public/ into dist/ as-is.
+#
+# index.html must never be cached: it is the only file whose name does not
+# change between builds, so a cached copy keeps pointing at asset filenames
+# that no longer exist and the site goes blank after a deploy.
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate
+  X-Content-Type-Options: nosniff
+
+# Everything under /assets carries a content hash in its filename, so a given
+# URL can never change meaning. Cache it for a year.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+  X-Content-Type-Options: nosniff
