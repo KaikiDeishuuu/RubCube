@@ -16,7 +16,23 @@
 | Node 版本 | `>=22.12` | 根 `package.json` 的 `engines.node` |
 | 包管理器 | pnpm 10.15.0 | 根 `package.json` 的 `packageManager`，经 corepack |
 
-唯一要在面板里确认的是 **Root Directory 保持仓库根目录**（默认值），不要改成 `packages/app`。
+唯一要在面板里确认的是 **Root Directory 留空**（= 仓库根目录），不要填 `packages/app`。
+
+**这一条是整个部署里最容易踩的坑**，值得单独说清楚：`vercel.json` 里的
+`outputDirectory` 是**相对 Root Directory** 解析的，不是相对仓库根。所以 Root Directory
+填了 `packages/app` 之后，`"outputDirectory": "dist"` 会被解析成 `packages/app/dist`，
+而构建产物在仓库根 `dist/`，于是报 `No Output Directory named "dist" found`——构建其实
+完全成功了，只是找错了地方。
+
+判断 Root Directory 当前取值不用翻设置页，看构建日志的包名前缀即可：
+
+| 日志里的前缀 | 说明 |
+| --- | --- |
+| `packages/app build$` | Root Directory 是仓库根，正确 |
+| `. build$` 且 `../cube-core build$` | Root Directory 是 `packages/app`，要清空 |
+
+同样地，面板 Build and Deployment 里的三个 **Override 开关建议全部关掉**，让 `vercel.json`
+独占配置。面板里的值是不进版本库的隐藏状态，和仓库里的配置分叉时极难排查。
 
 产物**输出在仓库根目录的 `dist/`**，不是 `packages/app/dist`。这是刻意的：Vercel 找不到
 `outputDirectory` 时默认就去找根目录下的 `dist`，两者对齐之后，即使 `vercel.json` 因为
