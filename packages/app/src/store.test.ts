@@ -23,6 +23,7 @@ import { describe, expect, it } from 'vitest';
 
 import { replayHistory } from './history.js';
 import { createCubeStore } from './store.js';
+import { IDLE_TIMER, type TimerEvent } from './timer.js';
 
 function moveBatch(
   start: CubeState,
@@ -522,5 +523,139 @@ describe('command and transport status', () => {
       message: 'Unknown dispatch failure',
     });
     expect(statesEqual(store.getState().cube, latest)).toBe(true);
+  });
+});
+
+
+describe('solve results', () => {
+  /** Drives the machine to a finished attempt of `durationMs`. */
+  function solve(
+    store: ReturnType<typeof createCubeStore>,
+    durationMs: number,
+    at = 0,
+  ): void {
+    const script: readonly TimerEvent[] = [
+      { type: 'hold-start', at },
+      { type: 'tick', at: at + 600 },
+      { type: 'hold-end', at: at + 700 },
+      { type: 'solved', at: at + 700 + durationMs },
+    ];
+    for (const event of script) store.getState().dispatchTimer(event);
+  }
+
+  it('records one result on the edge into stopped, not on every event', () => {
+    const store = createCubeStore();
+    store.getState().setScramble("R U R' U'", 4_242);
+    solve(store, 12_340);
+
+    expect(store.getState().results).toHaveLength(1);
+    expect(store.getState().results[0]).toMatchObject({
+      rawMs: 12_340,
+      penalty: 'none',
+      scramble: "R U R' U'",
+      scrambleSeed: 4_242,
+    });
+
+    // Further events on a finished attempt must not append a second copy.
+    store.getState().dispatchTimer({ type: 'solved', at: 99_000 });
+    store.getState().dispatchTimer({ type: 'abort', at: 99_000 });
+    expect(store.getState().results).toHaveLength(1);
+  });
+
+  it('records an abandoned attempt as a DNF rather than losing it', () => {
+    const store = createCubeStore();
+    store.getState().dispatchTimer({ type: 'hold-start', at: 0 });
+    store.getState().dispatchTimer({ type: 'tick', at: 600 });
+    store.getState().dispatchTimer({ type: 'hold-end', at: 700 });
+    store.getState().dispatchTimer({ type: 'abort', at: 5_700 });
+
+    expect(store.getState().results).toEqual([
+      expect.objectContaining({ rawMs: 5_000, penalty: 'dnf' }),
+    ]);
+  });
+
+  it('records nothing for an attempt that never started', () => {
+    const store = createCubeStore();
+    store.getState().dispatchTimer({ type: 'hold-start', at: 0 });
+    store.getState().dispatchTimer({ type: 'hold-end', at: 100 });
+    store.getState().dispatchTimer({ type: 'reset', at: 200 });
+    expect(store.getState().results).toEqual([]);
+    expect(store.getState().timer).toEqual(IDLE_TIMER);
+  });
+
+  it('keeps ids rising across a cleared session', () => {
+    const store = createCubeStore();
+    solve(store, 1_000);
+    const first = store.getState().results[0]!.id;
+
+    store.getState().clearResults();
+    solve(store, 2_000, 10_000);
+    const second = store.getState().results[0]!.id;
+
+    // A penalty edit aimed at the cleared solve must not land on the new one,
+    // which is exactly what a reused id would allow.
+    expect(second).toBeGreaterThan(first);
+    store.getState().setResultPenalty(first, 'dnf');
+    expect(store.getState().results[0]!.penalty).toBe('none');
+  });
+
+  it('edits and drops results by id', () => {
+    const store = createCubeStore();
+    solve(store, 1_000);
+    solve(store, 2_000, 10_000);
+    const [a, b] = store.getState().results;
+
+    store.getState().setResultPenalty(b!.id, 'plus2');
+    expect(store.getState().results.map((r) => r.penalty)).toEqual(['none', 'plus2']);
+
+    store.getState().deleteResult(a!.id);
+    expect(store.getState().results).toEqual([
+      expect.objectContaining({ id: b!.id, penalty: 'plus2' }),
+    ]);
+  });
+
+  it('leaves state identical for edits that change nothing', () => {
+    const store = createCubeStore();
+    solve(store, 1_000);
+    const before = store.getState().results;
+
+    store.getState().setResultPenalty(before[0]!.id, 'none');
+    store.getState().setResultPenalty(9_999, 'dnf');
+    store.getState().deleteResult(9_999);
+    // Identity, not equality: a new array here would rerender every consumer.
+    expect(store.getState().results).toBe(before);
+
+    store.getState().clearResults();
+    const empty = store.getState().results;
+    store.getState().clearResults();
+    expect(store.getState().results).toBe(empty);
+  });
+
+  it('abandons a live attempt when the inspection rule changes under it', () => {
+    const store = createCubeStore();
+    store.getState().dispatchTimer({ type: 'hold-start', at: 0 });
+    store.getState().dispatchTimer({ type: 'tick', at: 600 });
+    store.getState().dispatchTimer({ type: 'hold-end', at: 700 });
+    expect(store.getState().timer.phase).toBe('running');
+
+    // Scoring this attempt under a rule it was not run to would be worse than
+    // losing it, and it has not been recorded, so nothing is destroyed.
+    store.getState().setInspection(true);
+    expect(store.getState().timer).toEqual(IDLE_TIMER);
+    expect(store.getState().results).toEqual([]);
+    expect(store.getState().timerConfig.inspection).toBe(true);
+  });
+
+  it('leaves an idle timer alone when the rule changes', () => {
+    const store = createCubeStore();
+    const before = store.getState().timer;
+    store.getState().setInspection(true);
+    expect(store.getState().timer).toBe(before);
+
+    // Setting the value it already has must not disturb anything either.
+    solve(store, 0);
+    const running = store.getState().timer;
+    store.getState().setInspection(true);
+    expect(store.getState().timer).toBe(running);
   });
 });

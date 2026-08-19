@@ -41,6 +41,14 @@ import {
 } from './history.js';
 import { readSoundEnabled, writeSoundEnabled } from './preferences.js';
 import { useCubeStore } from './store.js';
+import {
+  PENALTIES,
+  formatMs,
+  formatResult,
+  readTimer,
+  type Penalty,
+  type TimerPhase,
+} from './timer.js';
 
 const FACE_ORDER = ['U', 'R', 'F', 'D', 'L', 'B'] as const;
 
@@ -62,6 +70,25 @@ const KEY_HINTS = [
   ['W / O', "B / B'"],
 ] as const;
 
+/** Phases in which the cube is under the timer's control, not the player's. */
+const LOCKED_PHASES: ReadonlySet<TimerPhase> = new Set<TimerPhase>([
+  'inspecting',
+  'holding',
+  'armed',
+]);
+
+/** Phases whose readout changes every frame. */
+const LIVE_PHASES: ReadonlySet<TimerPhase> = new Set<TimerPhase>([
+  ...LOCKED_PHASES,
+  'running',
+]);
+
+const PENALTY_LABEL: Readonly<Record<Penalty, string>> = {
+  none: 'OK',
+  plus2: '+2',
+  dnf: 'DNF',
+};
+
 let nextCommandSerial = 1;
 
 function createCommandId(kind: string): string {
@@ -75,6 +102,11 @@ function errorMessage(error: unknown): string {
     return `第 ${error.tokenIndex + 1} 个记号“${error.token}”无效。仅支持 U D L R F B，可加 ' 或 2。`;
   }
   return error instanceof Error ? error.message : '无法解析这组公式。';
+}
+
+/** `code` covers layouts where the space key does not produce a plain space. */
+function isSpace(event: KeyboardEvent): boolean {
+  return event.code === 'Space' || event.key === ' ';
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {
@@ -130,6 +162,7 @@ function App() {
   const rendererRef = useRef<CubeRendererInstance | null>(null);
   const transportRef = useRef<CommitDispatcher | null>(null);
   const audioRef = useRef<TurnAudio | null>(null);
+  const timerDigitsRef = useRef<HTMLSpanElement>(null);
   const [soundEnabled, setSoundEnabled] = useState(readSoundEnabled);
 
   const cube = useCubeStore((store) => store.cube);
@@ -145,6 +178,13 @@ function App() {
   const scramble = useCubeStore((store) => store.scramble);
   const scrambleSeed = useCubeStore((store) => store.scrambleSeed);
   const lastAction = useCubeStore((store) => store.lastAction);
+  // Only the phase is subscribed, not the whole timer: the digits are painted
+  // straight into the DOM from rAF, so a running solve must not re-render this
+  // tree sixty times a second.
+  const timerPhase = useCubeStore((store) => store.timer.phase);
+  const timerPenalty = useCubeStore((store) => store.timer.penalty);
+  const inspection = useCubeStore((store) => store.timerConfig.inspection);
+  const results = useCubeStore((store) => store.results);
 
   const facelets = useMemo(() => toFacelets(cube), [cube]);
   const solved = useMemo(() => isSolved(cube), [cube]);
@@ -176,6 +216,19 @@ function App() {
           // batch. Observer throws are contained by the dispatcher, so sound
           // can never halt playback.
           audioRef.current?.playBatch(event);
+          // Read the clock here rather than in an effect. This runs inside the
+          // commit that ends the turn, so it is the closest the app gets to the
+          // moment the cube became solved; a render pass later would charge the
+          // solve for whatever the scheduler did next.
+          for (const change of event.changes) {
+            // A replace snapshot is a reset or a checkpoint load, not a solve.
+            if (change.move === null) continue;
+            if (!isSolved(change.state)) continue;
+            useCubeStore
+              .getState()
+              .dispatchTimer({ type: 'solved', at: performance.now() });
+            break;
+          }
           const lastChange = event.changes.at(-1);
           if (lastChange === undefined || lastChange.move === null) return;
           if (lastChange.provenance.origin === 'drag') {
@@ -271,7 +324,12 @@ function App() {
                 keyboard: false,
                 transportSink: sink,
                 acceptInteractive: (face, provenance) =>
-                  active && backendGeneration === generation
+                  active &&
+                  backendGeneration === generation &&
+                  // Inspection is time to look, not to turn. Blocking the drag
+                  // here rather than in the key handler covers the pointer path
+                  // too, which is the one that would otherwise stay open.
+                  !LOCKED_PHASES.has(useCubeStore.getState().timer.phase)
                     ? transport.beginInteractive(face, provenance)
                     : false,
                 onRenderFailure: switchToFallback,
@@ -428,6 +486,84 @@ function App() {
     };
   }, []);
 
+  const paintTimer = useCallback((): void => {
+    const node = timerDigitsRef.current;
+    if (node === null) return;
+    const store = useCubeStore.getState();
+    const readout = readTimer(store.timer, performance.now(), store.timerConfig);
+    switch (readout.kind) {
+      case 'inspection':
+        // Once inspection has overrun, the remaining count is meaningless and
+        // the cost is the only thing worth showing.
+        node.textContent =
+          readout.penalty === 'dnf'
+            ? 'DNF'
+            : readout.penalty === 'plus2'
+              ? '+2'
+              : Math.ceil(readout.remainingMs / 1_000).toString();
+        return;
+      case 'running':
+        node.textContent = formatMs(readout.elapsedMs);
+        return;
+      case 'result':
+        node.textContent = formatResult(readout.rawMs, readout.penalty);
+        return;
+      default:
+        node.textContent = formatMs(0);
+    }
+  }, []);
+
+  useEffect(() => {
+    // Paint on every phase edge, including the ones that end the loop: the last
+    // frame of a running solve is not the final time, and a stopped readout
+    // would otherwise keep whatever the loop happened to leave behind.
+    paintTimer();
+    if (!LIVE_PHASES.has(timerPhase)) return;
+
+    let frame = 0;
+    const step = (): void => {
+      // The charge is advanced from the frame loop rather than a timeout so it
+      // cannot fire while the tab is hidden and arm a solve nobody is watching.
+      if (useCubeStore.getState().timer.phase === 'holding') {
+        useCubeStore.getState().dispatchTimer({ type: 'tick', at: performance.now() });
+      }
+      paintTimer();
+      frame = requestAnimationFrame(step);
+    };
+    frame = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(frame);
+  }, [paintTimer, timerPhase]);
+
+  useEffect(() => {
+    // A window that loses focus mid-hold would otherwise never see the keyup
+    // and would sit charged until the next unrelated keystroke started a solve.
+    const release = (): void =>
+      useCubeStore.getState().dispatchTimer({ type: 'hold-end', at: performance.now() });
+    window.addEventListener('blur', release);
+    return () => window.removeEventListener('blur', release);
+  }, []);
+
+  const beginHold = useCallback((): void => {
+    const store = useCubeStore.getState();
+    // A hold that only continues an attempt already under way needs no gate;
+    // the checks below decide whether a *new* attempt may open.
+    if (store.timer.phase === 'idle' || store.timer.phase === 'stopped') {
+      if (
+        store.renderMode === 'booting' ||
+        store.transportFatal ||
+        store.fatalInvariant !== null ||
+        // Timing the solve of a cube that is already solved records a result
+        // that means nothing, and the stop condition would fire immediately.
+        isSolved(store.cube) ||
+        // A scramble still playing is not a solve the player has started.
+        store.transportBusy
+      ) {
+        return;
+      }
+    }
+    store.dispatchTimer({ type: 'hold-start', at: performance.now() });
+  }, []);
+
   const toggleSound = useCallback((): void => {
     const next = !soundEnabled;
     setSoundEnabled(next);
@@ -462,7 +598,27 @@ function App() {
         return;
       }
 
+      if (isSpace(event)) {
+        // Always swallowed, even when the hold is refused: space would
+        // otherwise scroll the page, or re-activate whichever button the last
+        // click left focused.
+        event.preventDefault();
+        beginHold();
+        return;
+      }
+
       if (event.key === 'Escape') {
+        // A live attempt outranks playback here. Escape during a solve means
+        // "this attempt is over"; there is rarely queued playback to cancel
+        // mid-solve, and abandoning the attempt is the harder thing to undo.
+        const phase = useCubeStore.getState().timer.phase;
+        if (LIVE_PHASES.has(phase)) {
+          event.preventDefault();
+          useCubeStore
+            .getState()
+            .dispatchTimer({ type: 'abort', at: performance.now() });
+          return;
+        }
         if (transportRef.current?.isBusy === true) {
           event.preventDefault();
           cancelPlayback();
@@ -473,12 +629,27 @@ function App() {
       const move = moveForKey(event.key);
       if (move === null) return;
       event.preventDefault();
+      // Turning during inspection would both break the rule and change the
+      // state the solve is scored against.
+      if (LOCKED_PHASES.has(useCubeStore.getState().timer.phase)) return;
       playMove(move);
     };
 
+    const onKeyUp = (event: KeyboardEvent): void => {
+      if (!isSpace(event) || isEditableTarget(event.target)) return;
+      event.preventDefault();
+      useCubeStore
+        .getState()
+        .dispatchTimer({ type: 'hold-end', at: performance.now() });
+    };
+
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [cancelPlayback, playMove, rewindHistory, undoLastMove]);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    };
+  }, [beginHold, cancelPlayback, playMove, rewindHistory, undoLastMove]);
 
   useEffect(() => {
     if (lastCommandEnd === null || lastCommandEnd.status === 'completed') return;
@@ -528,6 +699,9 @@ function App() {
       origin: 'scramble',
     });
     if (!accepted) return;
+    // The attempt this scramble replaces never finished, and its clock must not
+    // survive into a solve of a different cube.
+    store.dispatchTimer({ type: 'reset', at: performance.now() });
     store.setScramble(notation, seed);
     store.setFormulaError(null);
     store.setLastAction(`Scramble · seed ${seed}`);
@@ -539,6 +713,7 @@ function App() {
     if (transport === null) return;
     transport.replaceState(createSolvedState());
 
+    store.dispatchTimer({ type: 'reset', at: performance.now() });
     store.setScramble('', null);
     store.setFormulaError(null);
     store.setLastAction('Reset · solved');
@@ -553,6 +728,23 @@ function App() {
     event.currentTarget.blur();
     useCubeStore.getState().setFormulaError(null);
   };
+
+  const lastResult = results.at(-1);
+
+  const timerHint =
+    timerPhase === 'inspecting'
+      ? 'HOLD SPACE TO CHARGE'
+      : timerPhase === 'holding'
+        ? 'KEEP HOLDING'
+        : timerPhase === 'armed'
+          ? 'RELEASE TO START'
+          : timerPhase === 'running'
+            ? 'SOLVE TO STOP · ESC FOR DNF'
+            : solved
+              ? 'SCRAMBLE FIRST'
+              : timerPenalty === 'dnf'
+                ? 'DNF · HOLD SPACE TO RETRY'
+                : 'HOLD SPACE';
 
   const controlsDisabled =
     renderMode === 'booting' || transportFatal || fatalInvariant !== null;
@@ -643,6 +835,16 @@ function App() {
             <span>{renderMode === 'fallback' ? 'FACELET NET' : 'ORBIT VIEW'}</span>
           </div>
 
+          <div className={`timer-hud timer-hud--${timerPhase}`}>
+            {/* Painted from rAF, so it is hidden from assistive tech: a solve
+                would otherwise be announced sixty times a second. The finished
+                time is announced once, by the panel's live region. */}
+            <span className="timer-digits" ref={timerDigitsRef} aria-hidden="true">
+              {formatMs(0)}
+            </span>
+            <span className="timer-hint">{timerHint}</span>
+          </div>
+
           <div className="stage-label stage-label--bottom">
             <span className="interaction-copy">
               {renderMode === 'fallback' ? '2D MODE · USE CONTROLS' : 'DRAG ANY STICKER · ORBIT THE SCENE'}
@@ -696,6 +898,92 @@ function App() {
                 <p id="formula-error" className="field-error" role="alert">{formulaError}</p>
               )}
             </form>
+          </section>
+
+          <section className="panel-section timer-section">
+            <div className="section-row-heading">
+              <span className="eyebrow">TIMER / WCA</span>
+              <label className="inspection-toggle">
+                <input
+                  type="checkbox"
+                  checked={inspection}
+                  onChange={(event) =>
+                    useCubeStore.getState().setInspection(event.target.checked)
+                  }
+                />
+                <span>15s inspection</span>
+              </label>
+            </div>
+
+            <p className="timer-live" role="status" aria-live="polite">
+              {lastResult === undefined
+                ? '尚无成绩'
+                : `最新成绩 ${formatResult(lastResult.rawMs, lastResult.penalty)}`}
+            </p>
+
+            {results.length === 0 ? (
+              <p className="field-help">
+                打乱后按住空格 0.55 秒，松开开始计时；魔方复原时自动停止。Esc 判 DNF。
+              </p>
+            ) : (
+              <>
+                <ol className="result-list">
+                  {[...results].reverse().map((result, index) => (
+                    <li key={result.id} className="result-row">
+                      <span className="result-index">
+                        {results.length - index}
+                      </span>
+                      <span
+                        className={`result-time result-time--${result.penalty}`}
+                      >
+                        {formatResult(result.rawMs, result.penalty)}
+                      </span>
+                      <span className="result-penalties">
+                        {PENALTIES.map((penalty) => (
+                          <button
+                            key={penalty}
+                            type="button"
+                            className={
+                              result.penalty === penalty
+                                ? 'penalty-chip penalty-chip--on'
+                                : 'penalty-chip'
+                            }
+                            aria-pressed={result.penalty === penalty}
+                            aria-label={`第 ${results.length - index} 次成绩标记为 ${PENALTY_LABEL[penalty]}`}
+                            onClick={() =>
+                              useCubeStore
+                                .getState()
+                                .setResultPenalty(result.id, penalty)
+                            }
+                          >
+                            {PENALTY_LABEL[penalty]}
+                          </button>
+                        ))}
+                        <button
+                          type="button"
+                          className="penalty-chip penalty-chip--drop"
+                          aria-label={`删除第 ${results.length - index} 次成绩`}
+                          onClick={() =>
+                            useCubeStore.getState().deleteResult(result.id)
+                          }
+                        >
+                          ×
+                        </button>
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+                <div className="action-row">
+                  <button
+                    className="button button--quiet"
+                    type="button"
+                    onClick={() => useCubeStore.getState().clearResults()}
+                  >
+                    Clear session
+                  </button>
+                </div>
+              </>
+            )}
           </section>
 
           <section className="panel-section scramble-section">

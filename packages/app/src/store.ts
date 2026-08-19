@@ -14,8 +14,29 @@ import {
   reduceHistoryBatch,
   type HistoryState,
 } from './history.js';
+import {
+  DEFAULT_TIMER_CONFIG,
+  IDLE_TIMER,
+  rawDurationMs,
+  reduceTimer,
+  type Penalty,
+  type TimerConfig,
+  type TimerEvent,
+  type TimerState,
+} from './timer.js';
 
 export type RenderMode = 'booting' | 'webgl' | 'fallback';
+
+export interface SolveResult {
+  readonly id: number;
+  /** Wall clock at the moment the solve finished, for ordering and export. */
+  readonly recordedAt: number;
+  /** Solve length before any penalty; the penalty is applied when read. */
+  readonly rawMs: number;
+  readonly penalty: Penalty;
+  readonly scramble: string;
+  readonly scrambleSeed: number | null;
+}
 
 export interface FatalInvariant {
   readonly name: string;
@@ -44,6 +65,9 @@ export interface CubeStore {
   scramble: string;
   scrambleSeed: number | null;
   lastAction: string;
+  timer: TimerState;
+  timerConfig: TimerConfig;
+  results: readonly SolveResult[];
 
   /**
    * @deprecated Bootstrap-only checkpoint hydration. Runtime state changes must
@@ -64,6 +88,11 @@ export interface CubeStore {
   setFormulaError: (message: string | null) => void;
   setScramble: (scramble: string, seed: number | null) => void;
   setLastAction: (label: string) => void;
+  dispatchTimer: (event: TimerEvent) => void;
+  setInspection: (enabled: boolean) => void;
+  setResultPenalty: (id: number, penalty: Penalty) => void;
+  deleteResult: (id: number) => void;
+  clearResults: () => void;
 }
 
 function cloneCommandEnd(event: CommandEnd): CommandEnd {
@@ -130,6 +159,9 @@ export function createCubeStore(initialState: CubeState = createSolvedState()) {
   // render mode back to "booting" (for example during a StrictMode remount) must
   // not reopen a direct-write path after a transport has existed.
   let bootstrapCheckpointOpen = true;
+  // Outside Zustand state because it must keep rising across a cleared session:
+  // reusing an id would let a penalty edit land on the wrong solve.
+  let nextResultId = 0;
 
   return create<CubeStore>((set, get) => ({
     cube: initial.cube,
@@ -146,6 +178,9 @@ export function createCubeStore(initialState: CubeState = createSolvedState()) {
     scramble: '',
     scrambleSeed: null,
     lastAction: 'Ready',
+    timer: IDLE_TIMER,
+    timerConfig: DEFAULT_TIMER_CONFIG,
+    results: [],
 
     setCube: (cube) => {
       set((state) => {
@@ -264,6 +299,68 @@ export function createCubeStore(initialState: CubeState = createSolvedState()) {
     setFormulaError: (formulaError) => set({ formulaError }),
     setScramble: (scramble, scrambleSeed) => set({ scramble, scrambleSeed }),
     setLastAction: (lastAction) => set({ lastAction }),
+
+    dispatchTimer: (event) => {
+      set((state) => {
+        const timer = reduceTimer(state.timer, event, state.timerConfig);
+        // The machine returns its input unchanged for every event a finished
+        // attempt ignores, so this identity check is what keeps a repeated
+        // `solved` from appending a second copy of the same solve — not only a
+        // guard against a needless rerender.
+        if (timer === state.timer) return state;
+        if (timer.phase !== 'stopped') return { timer };
+        const rawMs = rawDurationMs(timer);
+        if (rawMs === null) return { timer };
+
+        nextResultId += 1;
+        return {
+          timer,
+          results: [
+            ...state.results,
+            {
+              id: nextResultId,
+              recordedAt: Date.now(),
+              rawMs,
+              penalty: timer.penalty,
+              scramble: state.scramble,
+              scrambleSeed: state.scrambleSeed,
+            },
+          ],
+        };
+      });
+    },
+
+    setInspection: (enabled) => {
+      set((state) => {
+        if (state.timerConfig.inspection === enabled) return state;
+        // Changing the rule mid-attempt would score that attempt under a rule
+        // it was not run to, so the live attempt is abandoned rather than
+        // silently re-judged.
+        const timer = state.timer.phase === 'idle' ? state.timer : IDLE_TIMER;
+        return { timer, timerConfig: { ...state.timerConfig, inspection: enabled } };
+      });
+    },
+
+    setResultPenalty: (id, penalty) => {
+      set((state) => {
+        const index = state.results.findIndex((result) => result.id === id);
+        if (index === -1 || state.results[index]?.penalty === penalty) return state;
+        const results = [...state.results];
+        results[index] = { ...results[index]!, penalty };
+        return { results };
+      });
+    },
+
+    deleteResult: (id) => {
+      set((state) => {
+        const results = state.results.filter((result) => result.id !== id);
+        return results.length === state.results.length ? state : { results };
+      });
+    },
+
+    clearResults: () => {
+      set((state) => (state.results.length === 0 ? state : { results: [] }));
+    },
   }));
 }
 

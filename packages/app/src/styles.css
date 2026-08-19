@@ -226,6 +226,175 @@ button:disabled {
   color: #3c423d;
 }
 
+/* Timer ------------------------------------------------------------------- */
+
+.timer-hud {
+  position: absolute;
+  top: 46px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  /* The readout sits over the cube, and the cube is what the player is looking
+     at: it must never swallow a drag aimed at a sticker behind it. */
+  pointer-events: none;
+  text-align: center;
+}
+
+.timer-digits {
+  font-variant-numeric: tabular-nums;
+  /* Tabular figures alone are not enough: the digits still reflow when the
+     count crosses ten seconds, so the whole readout must not be centred on a
+     width that changes. A fixed minimum holds it still. */
+  min-width: 5ch;
+  font-size: clamp(38px, 6vw, 62px);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  color: var(--ink);
+  text-shadow: 0 2px 24px rgba(9, 11, 10, 0.85);
+  transition: color 120ms ease;
+}
+
+.timer-hint {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+/* Uncharged: the hold has started but a release now would do nothing. */
+.timer-hud--holding .timer-digits {
+  color: var(--danger);
+}
+
+/* Charged: releasing starts the solve. */
+.timer-hud--armed .timer-digits {
+  color: var(--acid);
+}
+
+.timer-hud--inspecting .timer-digits {
+  color: #ffc66e;
+}
+
+.timer-hud--running .timer-digits {
+  color: var(--acid);
+}
+
+.timer-hud--idle .timer-digits {
+  color: #6e756f;
+}
+
+.inspection-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.inspection-toggle input {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--acid);
+  cursor: pointer;
+}
+
+.timer-live {
+  margin: 0 0 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.result-list {
+  max-height: 168px;
+  margin: 0 0 12px;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.result-row {
+  display: grid;
+  grid-template-columns: 2.5ch minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.result-index {
+  color: var(--faint);
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.result-time {
+  font-size: 13px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+}
+
+.result-time--plus2 {
+  color: #ffc66e;
+}
+
+.result-time--dnf {
+  color: var(--danger);
+  text-decoration: line-through;
+}
+
+.result-penalties {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.penalty-chip {
+  min-width: 30px;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--faint);
+  cursor: pointer;
+  font: inherit;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.penalty-chip:hover {
+  border-color: var(--line-strong);
+  color: var(--muted);
+}
+
+.penalty-chip--on {
+  border-color: rgba(184, 243, 74, 0.4);
+  background: var(--acid-soft);
+  color: var(--acid);
+}
+
+.penalty-chip--drop {
+  min-width: 22px;
+}
+
+.penalty-chip--drop:hover {
+  border-color: rgba(255, 121, 111, 0.45);
+  color: var(--danger);
+}
+
 .workspace {
   min-height: 0;
   display: grid;
@@ -911,6 +1080,14 @@ kbd {
   .workspace {
     grid-template-rows: min(max(430px, 58vh), calc(100vh - var(--topbar-h) - 30px)) auto;
     grid-template-rows: min(max(430px, 58dvh), calc(100dvh - var(--topbar-h) - 30px)) auto;
+  }
+
+  .timer-hud {
+    top: 38px;
+  }
+
+  .timer-digits {
+    font-size: clamp(32px, 11vw, 48px);
   }
 
   .stage-label {
