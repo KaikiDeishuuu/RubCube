@@ -115,6 +115,17 @@ function errorMessage(error: unknown): string {
 }
 
 /** `code` covers layouts where the space key does not produce a plain space. */
+/**
+ * Whether the primary pointer is a finger.
+ *
+ * The timer is a hold, and the two ways to hold are the space bar and the pad;
+ * a phone has no space bar, so telling a touch visitor to hold one is wrong.
+ */
+function matchesCoarsePointer(): boolean {
+  if (typeof matchMedia !== 'function') return false;
+  return matchMedia('(pointer: coarse)').matches;
+}
+
 function isSpace(event: KeyboardEvent): boolean {
   return event.code === 'Space' || event.key === ' ';
 }
@@ -174,6 +185,7 @@ function App() {
   const audioRef = useRef<TurnAudio | null>(null);
   const timerDigitsRef = useRef<HTMLSpanElement>(null);
   const [soundEnabled, setSoundEnabled] = useState(readSoundEnabled);
+  const [coarsePointer, setCoarsePointer] = useState(matchesCoarsePointer);
 
   const cube = useCubeStore((store) => store.cube);
   const history = useCubeStore((store) => store.history);
@@ -545,12 +557,24 @@ function App() {
   }, [paintTimer, timerPhase]);
 
   useEffect(() => {
-    // A window that loses focus mid-hold would otherwise never see the keyup
-    // and would sit charged until the next unrelated keystroke started a solve.
-    const release = (): void =>
-      useCubeStore.getState().dispatchTimer({ type: 'hold-end', at: performance.now() });
-    window.addEventListener('blur', release);
-    return () => window.removeEventListener('blur', release);
+    // A window that loses focus mid-hold never sees the keyup, and would sit
+    // charged until some later keystroke released it. Cancelled rather than
+    // released: losing focus is not the player letting go to start a solve.
+    const cancel = (): void =>
+      useCubeStore.getState().dispatchTimer({ type: 'hold-cancel', at: performance.now() });
+    window.addEventListener('blur', cancel);
+    return () => window.removeEventListener('blur', cancel);
+  }, []);
+
+  useEffect(() => {
+    if (typeof matchMedia !== 'function') return;
+    // A tablet with a keyboard attached, or a desktop browser being resized
+    // into a touch emulation, both change the answer while the page is open.
+    const query = matchMedia('(pointer: coarse)');
+    const sync = (): void => setCoarsePointer(query.matches);
+    sync();
+    query.addEventListener('change', sync);
+    return () => query.removeEventListener('change', sync);
   }, []);
 
   useEffect(() => {
@@ -641,6 +665,18 @@ function App() {
       }
     }
     store.dispatchTimer({ type: 'hold-start', at: performance.now() });
+  }, []);
+
+  const endHold = useCallback((): void => {
+    useCubeStore
+      .getState()
+      .dispatchTimer({ type: 'hold-end', at: performance.now() });
+  }, []);
+
+  const cancelHold = useCallback((): void => {
+    useCubeStore
+      .getState()
+      .dispatchTimer({ type: 'hold-cancel', at: performance.now() });
   }, []);
 
   const toggleSound = useCallback((): void => {
@@ -811,20 +847,24 @@ function App() {
   const lastResult = results.at(-1);
   const stats = useMemo(() => summarise(results), [results]);
 
+  const holdPrompt = coarsePointer ? 'HOLD THE PAD' : 'HOLD SPACE';
+
   const timerHint =
     timerPhase === 'inspecting'
-      ? 'HOLD SPACE TO CHARGE'
+      ? `${holdPrompt} TO CHARGE`
       : timerPhase === 'holding'
         ? 'KEEP HOLDING'
         : timerPhase === 'armed'
           ? 'RELEASE TO START'
           : timerPhase === 'running'
-            ? 'SOLVE TO STOP · ESC FOR DNF'
+            ? coarsePointer
+              ? 'SOLVE TO STOP'
+              : 'SOLVE TO STOP · ESC FOR DNF'
             : solved
               ? 'SCRAMBLE FIRST'
               : timerPenalty === 'dnf'
-                ? 'DNF · HOLD SPACE TO RETRY'
-                : 'HOLD SPACE';
+                ? `DNF · ${holdPrompt} TO RETRY`
+                : holdPrompt;
 
   const controlsDisabled =
     renderMode === 'booting' || transportFatal || fatalInvariant !== null;
@@ -995,6 +1035,36 @@ function App() {
               </label>
             </div>
 
+            <button
+              type="button"
+              className={`hold-pad hold-pad--${timerPhase}`}
+              // Pointer events rather than click: the timer is a hold, and the
+              // phone has no space bar, so without this path a touch device
+              // cannot start the timer at all.
+              onPointerDown={(event) => {
+                // Stops the press becoming a text selection or a scroll gesture
+                // partway through a hold that has to last most of a second.
+                event.preventDefault();
+                event.currentTarget.setPointerCapture(event.pointerId);
+                beginHold();
+              }}
+              onPointerUp={endHold}
+              onPointerCancel={cancelHold}
+              onLostPointerCapture={cancelHold}
+            >
+              {timerPhase === 'inspecting'
+                ? '按住蓄力'
+                : timerPhase === 'holding'
+                  ? '继续按住…'
+                  : timerPhase === 'armed'
+                    ? '松开开始'
+                    : timerPhase === 'running'
+                      ? '复原魔方即停止'
+                      : solved
+                        ? '先打乱'
+                        : '按住开始'}
+            </button>
+
             <p className="timer-live" role="status" aria-live="polite">
               {lastResult === undefined
                 ? '尚无成绩'
@@ -1054,16 +1124,16 @@ function App() {
                   ))}
                 </ol>
                 <dl className="stat-grid">
-                  <div className="stat">
+                  <div className="stat stat--half">
                     <dt>Best</dt>
                     <dd>{formatStat(stats.best)}</dd>
                   </div>
-                  <div className="stat">
+                  <div className="stat stat--half">
                     <dt>Mean</dt>
                     <dd>{formatStat(stats.mean)}</dd>
                   </div>
                   {stats.averages.map((average) => (
-                    <div className="stat" key={average.size}>
+                    <div className="stat stat--third" key={average.size}>
                       <dt>ao{average.size}</dt>
                       <dd>{formatStat(average.current)}</dd>
                       <dd className="stat-best">

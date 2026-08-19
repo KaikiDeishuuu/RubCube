@@ -33,6 +33,7 @@ function play(
 const hold = (at: number): TimerEvent => ({ type: 'hold-start', at });
 const release = (at: number): TimerEvent => ({ type: 'hold-end', at });
 const tick = (at: number): TimerEvent => ({ type: 'tick', at });
+const cancel = (at: number): TimerEvent => ({ type: 'hold-cancel', at });
 
 /** The shortest script that reaches a running solve, starting at `at`. */
 function startSolve(at: number): readonly TimerEvent[] {
@@ -72,6 +73,44 @@ describe('hold to start', () => {
 
   it('drops the charge when released early', () => {
     expect(play([hold(0), tick(400), release(410)])).toEqual(IDLE_TIMER);
+  });
+});
+
+describe('a hold taken away', () => {
+  it('does not start a solve from a charged hold', () => {
+    // A cancelled pointer or a window losing focus is not the player letting
+    // go; starting here would run a clock nobody is watching.
+    const cancelled = play([hold(0), tick(600), cancel(700)]);
+    expect(cancelled).toEqual(IDLE_TIMER);
+  });
+
+  it('drops an uncharged hold too', () => {
+    expect(play([hold(0), tick(300), cancel(400)])).toEqual(IDLE_TIMER);
+  });
+
+  it('returns to inspection with its clock intact', () => {
+    const back = play(
+      [hold(0), release(90), hold(3_000), tick(3_600), cancel(3_700)],
+      WITH_INSPECTION,
+    );
+    expect(back.phase).toBe('inspecting');
+    // The countdown keeps running from where it started: losing the pointer is
+    // not a way to buy more time to look at the cube.
+    expect(back.inspectionStartedAt).toBe(0);
+    expect(back.holdStartedAt).toBeNull();
+  });
+
+  it('leaves a running solve alone', () => {
+    // Losing pointer capture still fires after a normal release, by which time
+    // the solve has already begun.
+    const running = play(startSolve(0));
+    expect(reduceTimer(running, cancel(1_000))).toBe(running);
+  });
+
+  it('does nothing when there is no charge to take', () => {
+    expect(reduceTimer(IDLE_TIMER, cancel(1))).toBe(IDLE_TIMER);
+    const stopped = play([...startSolve(0), { type: 'solved', at: 5_000 }]);
+    expect(reduceTimer(stopped, cancel(6_000))).toBe(stopped);
   });
 });
 

@@ -236,7 +236,7 @@ button:disabled {
   z-index: 3;
   display: grid;
   justify-items: center;
-  gap: 4px;
+  gap: 10px;
   /* The readout sits over the cube, and the cube is what the player is looking
      at: it must never swallow a drag aimed at a sticker behind it. */
   pointer-events: none;
@@ -252,9 +252,14 @@ button:disabled {
   font-size: clamp(38px, 6vw, 62px);
   font-weight: 800;
   letter-spacing: -0.02em;
-  line-height: 1;
+  /* Not 1: parentheses in "DNF(12.34)" reach below the baseline, and a line box
+     tighter than the font's own lets them run into the hint underneath. */
+  line-height: 1.1;
   color: var(--ink);
-  text-shadow: 0 2px 24px rgba(9, 11, 10, 0.85);
+  /* Tight and dense rather than wide and soft. The shadow is here to hold the
+     digits legible over a bright cube face, but a 24px spread also lands on the
+     hint below and washes it out. */
+  text-shadow: 0 1px 3px rgba(9, 11, 10, 0.95), 0 2px 10px rgba(9, 11, 10, 0.8);
   transition: color 120ms ease;
 }
 
@@ -263,7 +268,8 @@ button:disabled {
   font-weight: 700;
   letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--faint);
+  color: var(--muted);
+  text-shadow: 0 1px 3px rgba(9, 11, 10, 0.95);
 }
 
 /* Uncharged: the hold has started but a release now would do nothing. */
@@ -308,12 +314,63 @@ button:disabled {
   cursor: pointer;
 }
 
+/*
+ * Announced, not shown: the result list right below already displays the latest
+ * time, so a visible copy would just repeat it. The live region still has to
+ * exist, because the readout that changes is painted from rAF and is hidden
+ * from assistive tech to keep a running solve from being read out every frame.
+ */
 .timer-live {
-  margin: 0 0 10px;
-  font-size: 12px;
-  font-weight: 700;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.hold-pad {
+  width: 100%;
+  min-height: 46px;
+  margin-bottom: 10px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.1em;
+  /* A hold lasts most of a second, and on a phone the browser would otherwise
+     read that as the start of a scroll or a long-press selection. */
+  touch-action: none;
+  user-select: none;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.hold-pad:hover {
   color: var(--ink);
-  font-variant-numeric: tabular-nums;
+}
+
+.hold-pad--holding {
+  border-color: rgba(255, 121, 111, 0.5);
+  background: rgba(255, 121, 111, 0.1);
+  color: var(--danger);
+}
+
+.hold-pad--armed,
+.hold-pad--running {
+  border-color: rgba(184, 243, 74, 0.45);
+  background: var(--acid-soft);
+  color: var(--acid);
+}
+
+.hold-pad--inspecting {
+  border-color: rgba(255, 198, 110, 0.45);
+  background: rgba(255, 198, 110, 0.1);
+  color: #ffc66e;
 }
 
 .result-list {
@@ -397,13 +454,23 @@ button:disabled {
 
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* Six columns so two halves and three thirds both divide it exactly. A
+     two-column grid leaves the fifth statistic beside an empty cell. */
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 1px;
   margin: 0 0 10px;
   /* The gap is the rule: one background behind a one-pixel grid gap draws every
      divider without a border on each cell doubling up at the seams. */
   background: var(--line);
   border: 1px solid var(--line);
+}
+
+.stat--half {
+  grid-column: span 3;
+}
+
+.stat--third {
+  grid-column: span 2;
 }
 
 .stat {
@@ -443,6 +510,27 @@ button:disabled {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+/*
+ * Short viewports — a landscape phone above all — leave the cube filling the
+ * stage top to bottom, so a centred readout lands on it. There is width to
+ * spare instead, so the readout moves into the empty left column.
+ */
+@media (max-height: 520px) {
+  .timer-hud {
+    top: 50%;
+    left: 20px;
+    transform: translateY(-50%);
+    justify-items: start;
+    gap: 6px;
+    text-align: left;
+  }
+
+  .timer-digits {
+    min-width: 0;
+    font-size: clamp(30px, 5.5vh, 44px);
+  }
 }
 
 .workspace {
@@ -1138,6 +1226,11 @@ kbd {
 
   .timer-digits {
     font-size: clamp(32px, 11vw, 48px);
+  }
+
+  .hold-pad {
+    min-height: 54px;
+    font-size: 12px;
   }
 
   .stage-label {

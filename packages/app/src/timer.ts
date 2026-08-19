@@ -66,6 +66,14 @@ export const IDLE_TIMER: TimerState = Object.freeze({
 export type TimerEvent =
   | { readonly type: 'hold-start'; readonly at: number }
   | { readonly type: 'hold-end'; readonly at: number }
+  /**
+   * The hold was taken away rather than released.
+   *
+   * A cancelled pointer or a window losing focus is not the player letting go
+   * to start: treating it as one starts a solve nobody is watching, from a
+   * charge they no longer control.
+   */
+  | { readonly type: 'hold-cancel'; readonly at: number }
   /** Advances phases that depend only on the passage of time. */
   | { readonly type: 'tick'; readonly at: number }
   | { readonly type: 'solved'; readonly at: number }
@@ -92,6 +100,18 @@ function inspectionPenalty(
   return 'none';
 }
 
+/**
+ * Gives up a charge without starting a solve.
+ *
+ * Inspection, if any, keeps running: a false start does not buy more time to
+ * look at the cube.
+ */
+function dropCharge(state: TimerState): TimerState {
+  return state.inspectionStartedAt === null
+    ? IDLE_TIMER
+    : { ...state, phase: 'inspecting', holdStartedAt: null };
+}
+
 function begin(state: TimerState, at: number, config: TimerConfig): TimerState {
   if (!config.inspection) {
     return { ...IDLE_TIMER, phase: 'holding', holdStartedAt: at };
@@ -107,6 +127,13 @@ export function reduceTimer(
   assertTimestamp(event.at);
 
   if (event.type === 'reset') return IDLE_TIMER;
+
+  if (event.type === 'hold-cancel') {
+    // Only a charge can be taken away. A running solve is not holding anything,
+    // and a lost-capture event still arrives after a normal release.
+    if (state.phase !== 'holding' && state.phase !== 'armed') return state;
+    return dropCharge(state);
+  }
 
   if (event.type === 'abort') {
     // Only a live attempt can be abandoned. Aborting from idle would otherwise
@@ -137,13 +164,7 @@ export function reduceTimer(
       return state;
 
     case 'holding': {
-      if (event.type === 'hold-end') {
-        // Released before the charge completed. Inspection, if any, keeps
-        // running: a false start does not buy more time to look at the cube.
-        return state.inspectionStartedAt === null
-          ? IDLE_TIMER
-          : { ...state, phase: 'inspecting', holdStartedAt: null };
-      }
+      if (event.type === 'hold-end') return dropCharge(state);
       if (event.type !== 'tick') return state;
       const held = state.holdStartedAt === null ? 0 : event.at - state.holdStartedAt;
       return held >= config.holdMs ? { ...state, phase: 'armed' } : state;
