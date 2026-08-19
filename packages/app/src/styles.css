@@ -395,6 +395,56 @@ button:disabled {
   color: var(--danger);
 }
 
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0 0 10px;
+  /* The gap is the rule: one background behind a one-pixel grid gap draws every
+     divider without a border on each cell doubling up at the seams. */
+  background: var(--line);
+  border: 1px solid var(--line);
+}
+
+.stat {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  background: var(--panel);
+}
+
+.stat dt {
+  color: var(--faint);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.stat dd {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat .stat-best {
+  color: var(--faint);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.stat-note {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .workspace {
   min-height: 0;
   display: grid;

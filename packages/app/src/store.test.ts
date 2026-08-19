@@ -659,3 +659,77 @@ describe('solve results', () => {
     expect(store.getState().timer).toBe(running);
   });
 });
+
+
+describe('restoring a session', () => {
+  function stored(id: number, rawMs: number) {
+    return {
+      id,
+      recordedAt: 1_000 + id,
+      rawMs,
+      penalty: 'none' as const,
+      scramble: "R U R' U'",
+      scrambleSeed: 1,
+    };
+  }
+
+  /** Drives the machine to a finished attempt of `durationMs`. */
+  function solve(store: ReturnType<typeof createCubeStore>, durationMs: number, at = 0): void {
+    const script: readonly TimerEvent[] = [
+      { type: 'hold-start', at },
+      { type: 'tick', at: at + 600 },
+      { type: 'hold-end', at: at + 700 },
+      { type: 'solved', at: at + 700 + durationMs },
+    ];
+    for (const event of script) store.getState().dispatchTimer(event);
+  }
+
+  it('restores a stored session', () => {
+    const store = createCubeStore();
+    store.getState().hydrateResults([stored(7, 9_000), stored(8, 10_000)]);
+    expect(store.getState().results.map((r) => r.id)).toEqual([7, 8]);
+  });
+
+  it('numbers new solves above everything it restored', () => {
+    const store = createCubeStore();
+    store.getState().hydrateResults([stored(7, 9_000), stored(8, 10_000)]);
+    solve(store, 11_000);
+
+    const ids = store.getState().results.map((r) => r.id);
+    expect(ids).toEqual([7, 8, 9]);
+    // An id counter that restarted at zero would let this solve collide with a
+    // restored one, and a penalty edit would then land on both.
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('keeps a solve that finished while the restore was still in flight', () => {
+    const store = createCubeStore();
+    solve(store, 5_000);
+    const raced = store.getState().results[0]!;
+    expect(raced.id).toBe(1);
+
+    store.getState().hydrateResults([stored(7, 9_000), stored(8, 10_000)]);
+    const results = store.getState().results;
+    // It keeps its place at the end of the session, renumbered clear of the
+    // restored ids it was about to collide with.
+    expect(results.map((r) => r.rawMs)).toEqual([9_000, 10_000, 5_000]);
+    expect(results.map((r) => r.id)).toEqual([7, 8, 9]);
+  });
+
+  it('restores once, so a late second load cannot duplicate the session', () => {
+    const store = createCubeStore();
+    store.getState().hydrateResults([stored(7, 9_000)]);
+    solve(store, 11_000);
+    const after = store.getState().results;
+
+    store.getState().hydrateResults([stored(7, 9_000)]);
+    expect(store.getState().results).toBe(after);
+  });
+
+  it('does not churn state when there is nothing to restore', () => {
+    const store = createCubeStore();
+    const before = store.getState().results;
+    store.getState().hydrateResults([]);
+    expect(store.getState().results).toBe(before);
+  });
+});

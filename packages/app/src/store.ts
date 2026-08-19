@@ -88,6 +88,7 @@ export interface CubeStore {
   setFormulaError: (message: string | null) => void;
   setScramble: (scramble: string, seed: number | null) => void;
   setLastAction: (label: string) => void;
+  hydrateResults: (results: readonly SolveResult[]) => void;
   dispatchTimer: (event: TimerEvent) => void;
   setInspection: (enabled: boolean) => void;
   setResultPenalty: (id: number, penalty: Penalty) => void;
@@ -162,6 +163,9 @@ export function createCubeStore(initialState: CubeState = createSolvedState()) {
   // Outside Zustand state because it must keep rising across a cleared session:
   // reusing an id would let a penalty edit land on the wrong solve.
   let nextResultId = 0;
+  // Restoring twice would duplicate a whole session, and a late restore
+  // arriving after the player has started solving must not replace their work.
+  let resultsHydrated = false;
 
   return create<CubeStore>((set, get) => ({
     cube: initial.cube,
@@ -299,6 +303,25 @@ export function createCubeStore(initialState: CubeState = createSolvedState()) {
     setFormulaError: (formulaError) => set({ formulaError }),
     setScramble: (scramble, scrambleSeed) => set({ scramble, scrambleSeed }),
     setLastAction: (lastAction) => set({ lastAction }),
+
+    hydrateResults: (loaded) => {
+      set((state) => {
+        if (resultsHydrated) return state;
+        resultsHydrated = true;
+        if (loaded.length === 0 && state.results.length === 0) return state;
+
+        nextResultId = loaded.reduce((max, result) => Math.max(max, result.id), 0);
+        // A solve finished while the restore was still in flight keeps its
+        // place at the end of the session, but is renumbered above everything
+        // restored: it was recorded against an id counter that started at zero
+        // and would otherwise collide with a restored solve.
+        const pending = state.results.map((result) => {
+          nextResultId += 1;
+          return { ...result, id: nextResultId };
+        });
+        return { results: [...loaded, ...pending] };
+      });
+    },
 
     dispatchTimer: (event) => {
       set((state) => {

@@ -31,6 +31,7 @@ import {
 } from 'react';
 
 import { createAppDispatcher } from './app-transport.js';
+import { createSolveArchive } from './archive.js';
 import { TurnAudio } from './audio.js';
 import { FallbackMoveTransportBackend } from './fallback-transport.js';
 import {
@@ -40,6 +41,7 @@ import {
   getUndoMove,
 } from './history.js';
 import { readSoundEnabled, writeSoundEnabled } from './preferences.js';
+import { formatStat, summarise, toCsv } from './stats.js';
 import { useCubeStore } from './store.js';
 import {
   PENALTIES,
@@ -88,6 +90,14 @@ const PENALTY_LABEL: Readonly<Record<Penalty, string>> = {
   plus2: '+2',
   dnf: 'DNF',
 };
+
+/**
+ * How long edits are coalesced before a session is written.
+ *
+ * Long enough that clicking through several penalty chips is one write, short
+ * enough that a finished solve is durable well before the next one starts.
+ */
+const SAVE_DEBOUNCE_MS = 400;
 
 let nextCommandSerial = 1;
 
@@ -543,6 +553,75 @@ function App() {
     return () => window.removeEventListener('blur', release);
   }, []);
 
+  useEffect(() => {
+    const archive = createSolveArchive();
+    if (archive === null) return;
+
+    let active = true;
+    let unsubscribe: (() => void) | null = null;
+    let pending: ReturnType<typeof setTimeout> | null = null;
+    let flush: (() => void) | null = null;
+
+    void archive
+      .load()
+      .then((loaded) => {
+        if (!active) return;
+        useCubeStore.getState().hydrateResults(loaded);
+
+        // Subscribing only once the restore has landed. Saving before then
+        // would write the empty starting session over the stored one and erase
+        // it in the moment before it was read back.
+        let latest = useCubeStore.getState().results;
+        flush = (): void => {
+          if (pending !== null) {
+            clearTimeout(pending);
+            pending = null;
+          }
+          void archive.save(latest);
+        };
+        unsubscribe = useCubeStore.subscribe((state, previous) => {
+          if (state.results === previous.results) return;
+          latest = state.results;
+          if (pending !== null) clearTimeout(pending);
+          pending = setTimeout(() => {
+            pending = null;
+            void archive.save(latest);
+          }, SAVE_DEBOUNCE_MS);
+        });
+      })
+      .catch(() => undefined);
+
+    // A tab being hidden may never come back, and the debounce window is long
+    // enough to lose the solve that was just finished. This is the last point the
+    // browser reliably runs anything.
+    const onHidden = (): void => {
+      if (document.visibilityState === 'hidden') flush?.();
+    };
+    document.addEventListener('visibilitychange', onHidden);
+
+    return () => {
+      active = false;
+      document.removeEventListener('visibilitychange', onHidden);
+      flush?.();
+      unsubscribe?.();
+      archive.close();
+    };
+  }, []);
+
+  const exportCsv = useCallback((): void => {
+    const results = useCubeStore.getState().results;
+    if (results.length === 0) return;
+    const blob = new Blob([toCsv(results)], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `rubcube-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    // Revoking on this task can cancel the download before it starts; one task
+    // later is the point every browser has already read the blob.
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  }, []);
+
   const beginHold = useCallback((): void => {
     const store = useCubeStore.getState();
     // A hold that only continues an attempt already under way needs no gate;
@@ -730,6 +809,7 @@ function App() {
   };
 
   const lastResult = results.at(-1);
+  const stats = useMemo(() => summarise(results), [results]);
 
   const timerHint =
     timerPhase === 'inspecting'
@@ -973,7 +1053,35 @@ function App() {
                     </li>
                   ))}
                 </ol>
+                <dl className="stat-grid">
+                  <div className="stat">
+                    <dt>Best</dt>
+                    <dd>{formatStat(stats.best)}</dd>
+                  </div>
+                  <div className="stat">
+                    <dt>Mean</dt>
+                    <dd>{formatStat(stats.mean)}</dd>
+                  </div>
+                  {stats.averages.map((average) => (
+                    <div className="stat" key={average.size}>
+                      <dt>ao{average.size}</dt>
+                      <dd>{formatStat(average.current)}</dd>
+                      <dd className="stat-best">
+                        best {formatStat(average.best)}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+
+                <p className="stat-note">
+                  {stats.solved} / {stats.count} 次计入
+                  {stats.solved === stats.count ? '' : `（${stats.count - stats.solved} 次 DNF）`}
+                </p>
+
                 <div className="action-row">
+                  <button className="button button--primary" type="button" onClick={exportCsv}>
+                    Export CSV
+                  </button>
                   <button
                     className="button button--quiet"
                     type="button"
