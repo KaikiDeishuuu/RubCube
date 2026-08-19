@@ -159,6 +159,65 @@ button:disabled {
   box-shadow: 0 0 0 4px rgba(255, 198, 110, 0.1);
 }
 
+.topbar-tail {
+  justify-self: end;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.sound-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--faint);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.sound-toggle:hover {
+  border-color: var(--line-strong);
+  color: var(--muted);
+}
+
+.sound-toggle--on {
+  border-color: rgba(184, 243, 74, 0.35);
+  background: var(--acid-soft);
+  color: var(--acid);
+}
+
+.sound-toggle--on:hover {
+  border-color: rgba(184, 243, 74, 0.55);
+  color: var(--acid);
+}
+
+.sound-toggle svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+.sound-toggle .speaker {
+  fill: currentColor;
+}
+
+.sound-toggle .wave {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+}
+
 .topbar-meta {
   justify-self: end;
 }
@@ -823,8 +882,22 @@ kbd {
   }
 
   .topbar {
-    grid-template-columns: 1fr auto;
+    grid-template-columns: 1fr auto auto;
     padding: 0 16px;
+  }
+
+  /* The tail keeps a grid cell on phones because the toggle stays, unlike the
+     build metadata it sits beside. Three cells, not two. */
+  .topbar-tail {
+    gap: 0;
+  }
+
+  .sound-toggle {
+    padding: 0 8px;
+  }
+
+  .sound-label {
+    display: none;
   }
 
   .topbar-status {

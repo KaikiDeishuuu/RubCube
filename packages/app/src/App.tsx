@@ -25,11 +25,13 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useState,
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
 
 import { createAppDispatcher } from './app-transport.js';
+import { TurnAudio } from './audio.js';
 import { FallbackMoveTransportBackend } from './fallback-transport.js';
 import {
   canRewind,
@@ -37,6 +39,7 @@ import {
   getRewindMoves,
   getUndoMove,
 } from './history.js';
+import { readSoundEnabled, writeSoundEnabled } from './preferences.js';
 import { useCubeStore } from './store.js';
 
 const FACE_ORDER = ['U', 'R', 'F', 'D', 'L', 'B'] as const;
@@ -126,6 +129,8 @@ function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<CubeRendererInstance | null>(null);
   const transportRef = useRef<CommitDispatcher | null>(null);
+  const audioRef = useRef<TurnAudio | null>(null);
+  const [soundEnabled, setSoundEnabled] = useState(readSoundEnabled);
 
   const cube = useCubeStore((store) => store.cube);
   const history = useCubeStore((store) => store.history);
@@ -165,6 +170,12 @@ function App() {
         transport.subscribe((event) => {
           if (!active || backendGeneration !== generation) return;
           if (!('changes' in event)) return;
+          // A batch is one committed animation group, which is exactly one
+          // audible event: it lands when the layer seats, a rolled-back drag
+          // never produces one, and a concurrent pair arrives as a single
+          // batch. Observer throws are contained by the dispatcher, so sound
+          // can never halt playback.
+          audioRef.current?.playBatch(event);
           const lastChange = event.changes.at(-1);
           if (lastChange === undefined || lastChange.move === null) return;
           if (lastChange.provenance.origin === 'drag') {
@@ -395,6 +406,39 @@ function App() {
   }, []);
 
   useEffect(() => {
+    // Owning the instance here rather than at render time keeps a StrictMode
+    // remount honest: the simulated unmount really does dispose the context,
+    // and the remount really does build a fresh one. The transport observer
+    // reads the ref at event time, so it never holds a disposed instance.
+    audioRef.current ??= new TurnAudio({ muted: !readSoundEnabled() });
+
+    // A context created outside a user gesture stays suspended for good, and
+    // the gesture that enabled sound may predate the first turn by minutes.
+    // These listeners are the cheap way to already be running when it matters:
+    // unlock returns immediately once the context runs, and while muted.
+    const unlock = (): void => audioRef.current?.unlock();
+    window.addEventListener('pointerdown', unlock, { passive: true });
+    window.addEventListener('keydown', unlock, { passive: true });
+
+    return () => {
+      window.removeEventListener('pointerdown', unlock);
+      window.removeEventListener('keydown', unlock);
+      audioRef.current?.dispose();
+      audioRef.current = null;
+    };
+  }, []);
+
+  const toggleSound = useCallback((): void => {
+    const next = !soundEnabled;
+    setSoundEnabled(next);
+    writeSoundEnabled(next);
+    // Reached from the button's own click handler, which is the gesture the
+    // autoplay policy asks for, so the context enabled here is already allowed
+    // to run and the very next turn is audible.
+    audioRef.current?.setMuted(!next);
+  }, [soundEnabled]);
+
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.repeat) return;
       const editable = isEditableTarget(event.target);
@@ -542,10 +586,36 @@ function App() {
           </span>
         </div>
 
-        <div className="topbar-meta">
-          <span>M2.5 playground</span>
-          <span aria-hidden="true">/</span>
-          <span>3 × 3</span>
+        <div className="topbar-tail">
+          <button
+            type="button"
+            className={`sound-toggle${soundEnabled ? ' sound-toggle--on' : ''}`}
+            onClick={toggleSound}
+            aria-pressed={soundEnabled}
+            aria-label={soundEnabled ? '关闭转动音效' : '开启转动音效'}
+            title={soundEnabled ? '关闭转动音效' : '开启转动音效'}
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path className="speaker" d="M3 6h2.4L8.8 3v10L5.4 10H3z" />
+              {soundEnabled ? (
+                <>
+                  <path className="wave" d="M10.9 5.7a3.2 3.2 0 0 1 0 4.6" />
+                  <path className="wave" d="M12.7 4a5.7 5.7 0 0 1 0 8" />
+                </>
+              ) : (
+                <path className="wave" d="M11 6.2 14 9.2M14 6.2 11 9.2" />
+              )}
+            </svg>
+            <span className="sound-label">
+              {soundEnabled ? 'Sound on' : 'Sound off'}
+            </span>
+          </button>
+
+          <div className="topbar-meta">
+            <span>M2.5 playground</span>
+            <span aria-hidden="true">/</span>
+            <span>3 × 3</span>
+          </div>
         </div>
       </header>
 
