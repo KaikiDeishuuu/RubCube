@@ -497,17 +497,46 @@ DESIGN.md §6.5 要 `optimality_ratio`，其中“k≤9 用真最优解”。实
 | 距离代理 | 使用 DESIGN.md §9 的唯一 M3d manifest：固定三类语料、seed、完整 solver profile、solver/table fingerprint、最低 coverage 与 go/no-go 阈值；统一报告 Spearman ρ、MAE、逆序率、最短解方向一致率和 Lipschitz 违规率。随机游走只作对照；失败则整体切换指标版本，不逐样本混用 PDB |
 | 代码覆盖率 | ≥ 90%（沿用仓库标准；不要和 M3d 的有效 proxy coverage 混淆） |
 
-**M3b 首版实测（`packages/cube-core/scripts/benchmark-solver-search.mjs`，参数与语料都写死在脚本里，不能事后调）。** Intel i7-9750H / WSL2 / Node 22.23.2，1,000 个 25 步随机打乱（seed 0–999），50 次预热：
+### M3b 实测
 
-| profile | 语料 | 解长 P50 / max | targetMet | 求解 P50 / P95 / P99 / max | 节点 P50 / P99 |
-|---|---|---|---|---|---|
-| `targetLength=21` | 1000 | 21 / 21 | 100% | 24.5 / 143 / **251** / 890 ms | 631k / 6.2M |
-| `targetLength=20` | 100 | 20 / 21 | 99% | 78 / 741 / 2240 / 4804 ms | 1.8M / 46M |
-| `targetLength=19` | 40 | 19 / 21 | 77.5% | 396 / 6133 / 7087 / 7799 ms | 7.7M / 143M |
+参考硬件：Intel i7-9750H / WSL2（Linux 6.18）/ Node 22.23.2，插电。表已 ready、JIT 预热后测量。
 
-**热路径速度这一项在 `targetLength=21` 下达标（P50 < 50、P99 < 300），但「解长度」一项不达标：中位数是 21 而不是 ≤ 20。** 两条准则在当前表集下互相拉扯——把 target 压到 20 才能让中位解长达标，而那时 P99 是 2.24 s。要同时满足需要更强的剪枝（对称约简的 flipudslice 表），那会改动 M3a 已冻结的表规格，因此留作后续决策而不是悄悄改判标准。
+**正确性与解长度**（`npm run verify:corpus`，语料/seed/profile 全部写死在脚本里）。§2.9 指定的 10,000 个**均匀随机状态**，seed `0x52554243`，`hardMax=30`、`targetLength=21`、`maxNodes=BENCH_SOLVER_NODE_BUDGET`（64,000,000）、不设 `budgetMs`：
 
-另外，分级广度改善了 P95/P99，却让**绝对最坏例变差**（最坏 890 ms / 19.0M 节点，两路时是 687 ms / 15.0M）：越过阈值后本来就慢的状态要为额外四路买单。app 侧用 `budgetMs` 兜住这一类。
+| 项 | 结果 |
+|---|---|
+| `solved` | **10,000 / 10,000**，无一例外 |
+| 解验证 | 全部 `applyMoves(s, moves)` 复原；输入五个数组求解前后逐字节未变 |
+| `targetMet` | 100%（按全语料统计，不是成功子集） |
+| 解长度 | P50 **21** · P95 21 · P99 21 · max 21 |
+| 节点 | P50 687k · P95 3.66M · P99 6.27M · max 20.2M |
+| 纯求解耗时 | P50 **28.5 ms** · P95 159 ms · P99 **280 ms** · max 967 ms |
+
+节点最大值 20.2M 远低于 64M 预算，所以**预算全程不是约束条件**，「全部 solved」不是靠放宽预算换来的。
+
+**目标长度的代价**（`npm run bench:search`，1,000 个 25 步打乱；语料越小的 profile 越贵，故各自标注规模）：
+
+| profile | 语料 | 解长 P50 / max | targetMet | 求解 P50 / P95 / P99 / max |
+|---|---|---|---|---|
+| `targetLength=21` | 1000 | 21 / 21 | 100% | 24.5 / 143 / 251 / 890 ms |
+| `targetLength=20` | 100 | 20 / 21 | 99% | 78 / 741 / 2240 / 4804 ms |
+| `targetLength=19` | 40 | 19 / 21 | 77.5% | 396 / 6133 / 7087 / 7799 ms |
+
+**Worker 往返**（headless Chromium / SwiftShader，150 个均匀随机状态，**不设 `budgetMs`**，所以没有被 deadline 截断的样本）：P50 **35.5 ms** · P95 175 ms · P99 **271 ms** · max 669 ms。
+
+往返的 P99 起初是 484 ms——高出纯求解一倍多。差额是让出事件循环的开销：一次 6M 节点的搜索要让出 60 次，而 `setTimeout(0)` 有钳位。改用 `MessageChannel`（同为宏任务、不受钳位）后降到 271 ms。
+
+**结论：热路径速度达标（纯求解 P50 28.5 < 50、P99 280 < 300；往返另报），但「解长度」不达标——中位数是 21，不是 ≤ 20。** 两条准则在当前表集下互相拉扯：把 target 压到 20 中位数才达标，而那时 P99 是 2.24 s。要同时满足需要更强的剪枝（对称约简的 flipudslice 表），那会改动 M3a 已冻结的表规格，因此留作后续决策，不是悄悄改判标准。
+
+另外，分级广度改善了 P95/P99，却让**绝对最坏例变差**（890 ms / 19.0M 节点，两路时是 687 ms / 15.0M）：越过阈值后本来就慢的状态要为额外四路买单。app 侧用 `budgetMs` 兜住这一类。
+
+**确定性**：同一状态、固定 profile、不设 `budgetMs`、不取消，重复 10 次 moves/status/nodes 完全一致；分片大小与调用方 chunk 无关，所以 chunk 取 1 / 97 / 2048 / 50000 得到同一结果与同一节点数。**Node 直调与 Worker 在 150 个状态上 moves 与 nodes 逐例一致。**
+
+**Worker 集成**（浏览器实测）：caller 的五个 buffer 求解前后 `byteLength` 均未归零；ready 之前直接发 solve 能正常拿到解；并发 solve 时旧请求返回 `cancelled` 而不是消失；外部 cancel 生效；非法状态以 typed error 拒绝而不是返回空解；`indexedDB` 取值即抛时仍能求解，且答案与 Node 一致。
+
+**代码覆盖率**：`cube-core` 语句 97.19% / 分支 94.11%（`search.ts` 97.41%、`orientation.ts` 96.55%），达标。
+
+**尚未测量**：冷路径的生成/校验/序列化/缓存写入/缓存命中/资产解码 P50/P95 分项（§2.6 的 A/B 门槛因此仍未关闭）；移动设备实测；M3c 最优解与 M3d 距离代理。
 
 完整 profile（含 `hardMax` / `targetLength` / `BENCH_SOLVER_NODE_BUDGET` / move order / 节点计数版本）、语料数量、seed、参考硬件说明和 solver/table fingerprint 都提交进仓库，报告里原样输出，不能跑完以后按结果调预算。墙钟 `budgetMs` 只用于 app SLA；benchmark 若要比较耗时，算法输入仍保持固定节点预算。
 

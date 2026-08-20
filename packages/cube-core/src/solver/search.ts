@@ -55,6 +55,21 @@ export const TWO_PHASE_MAX_LENGTH = PHASE1_MAX_DEPTH + PHASE2_MAX_DEPTH;
 /** Product goal, not a completeness bound: 30 is what the split guarantees. */
 export const DEFAULT_TARGET_LENGTH = 21;
 
+/**
+ * The node budget the committed measurement profiles run under.
+ *
+ * Sized so the budget is not the binding constraint: a 300-state sample of
+ * uniform random cubes peaked at 15.0M nodes, and the 10,000-state acceptance
+ * corpus at 20.2M, so this sits about three times above anything measured. A
+ * corpus state that exhausts it is a result to report, not a number to raise
+ * afterwards — which is why it is declared here, beside the other profile
+ * parameters and under version control, rather than in whichever script is
+ * running. It is deliberately *not* part of SOLVER_FINGERPRINT: the fingerprint
+ * versions the search's behaviour, and a budget changes how far it gets, not
+ * what it does.
+ */
+export const BENCH_SOLVER_NODE_BUDGET = 64_000_000;
+
 const UD_SLICE_SIZE = COORDINATE_SIZES.UDSlice;
 const SLICE_PERM_SIZE = COORDINATE_SIZES.SlicePerm;
 

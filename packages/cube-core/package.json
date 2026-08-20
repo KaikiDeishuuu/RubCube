@@ -24,9 +24,10 @@
     "bench:search": "tsc -p tsconfig.build.json && node scripts/benchmark-solver-search.mjs",
     "bench:tables": "tsc -p tsconfig.build.json && node scripts/benchmark-solver-tables.mjs",
     "build": "tsc -p tsconfig.build.json",
+    "coverage": "vitest run --coverage",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json",
-    "coverage": "vitest run --coverage"
+    "verify:corpus": "tsc -p tsconfig.build.json && node scripts/verify-solver-corpus.mjs"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^3.2.4",

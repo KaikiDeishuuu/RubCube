@@ -65,16 +65,30 @@ function fail(requestId: number, error: unknown): void {
   });
 }
 
+const yieldChannel = new MessageChannel();
+const yieldWaiters: (() => void)[] = [];
+yieldChannel.port1.onmessage = () => {
+  yieldWaiters.shift()?.();
+};
+yieldChannel.port1.start();
+
 /**
  * Hands the event loop back.
  *
  * A macrotask, not a microtask: a queued message is a task, so resolving a
- * promise would run the continuation before the message ever got a turn and
- * the worker would still be uncancellable.
+ * promise would run the continuation before the incoming message ever got a
+ * turn and the worker would still be uncancellable.
+ *
+ * A channel message rather than `setTimeout(0)`, which is clamped. A search
+ * yields once per chunk — sixty times for a six-million-node search — and with
+ * the clamp that was adding more latency than the chunk boundary was worth.
+ * Measured round-trip P99 in a headless browser: 484ms clamped against a 251ms
+ * pure solve, and 271ms once the clamp was out of the way.
  */
 function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => {
-    setTimeout(resolve, 0);
+    yieldWaiters.push(resolve);
+    yieldChannel.port2.postMessage(0);
   });
 }
 
