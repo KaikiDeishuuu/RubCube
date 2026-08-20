@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
+import { applyMoves, invertMoves, parseMoves } from '../src/moves.js';
 import {
   CORNER_NAMES,
   CubeStateValidationError,
   EDGE_NAMES,
   assertValidState,
   cloneState,
+  composeStates,
   createSolvedState,
+  invertState,
   isSolved,
   isValidState,
   statesEqual,
@@ -294,5 +297,107 @@ describe('state legality', () => {
     assertValidState(candidate);
     const state: CubeState = candidate;
     expect(isSolved(state)).toBe(true);
+  });
+});
+
+describe('state inverse', () => {
+  it('composes with its own state to give the solved cube', () => {
+    // A sequence and its reverse: applying the inverse state's defining moves
+    // is the same as undoing the original.
+    for (const notation of ["R U R' U'", "F2 L D B' R2", "M E' S2 R U", '']) {
+      const moves = parseMoves(notation);
+      const state = applyMoves(createSolvedState(), moves);
+      const inverse = invertState(state);
+      expect(statesEqual(inverse, applyMoves(createSolvedState(), invertMoves(moves)))).toBe(
+        true,
+      );
+    }
+  });
+
+  it('is its own undo', () => {
+    const state = applyMoves(createSolvedState(), parseMoves("R U2 D' B M' D'"));
+    expect(statesEqual(invertState(invertState(state)), state)).toBe(true);
+  });
+
+  it('leaves the solved cube alone', () => {
+    expect(statesEqual(invertState(createSolvedState()), createSolvedState())).toBe(true);
+  });
+
+  it('produces a valid state, centres included', () => {
+    // The centre permutation has to invert too, or the result is not one of the
+    // 24 orientations and validation rejects it.
+    const state = applyMoves(createSolvedState(), parseMoves("M2 E S' R U F"));
+    const inverse = invertState(state);
+    expect(isValidState(inverse)).toBe(true);
+    expect(validateState(inverse)).toEqual([]);
+  });
+
+  it('never touches the state it inverts', () => {
+    const state = applyMoves(createSolvedState(), parseMoves("R U R' U'"));
+    const before = cloneState(state);
+    invertState(state);
+    expect(statesEqual(state, before)).toBe(true);
+  });
+
+  it('rejects a state that is not valid', () => {
+    expect(() => invertState({} as never)).toThrow();
+  });
+});
+
+
+describe('state composition', () => {
+  const solved = createSolvedState();
+  const stateOf = (notation: string): CubeState =>
+    applyMoves(solved, parseMoves(notation));
+
+  it('is what applying one sequence after another means', () => {
+    // The group operation has to agree with the move layer, or conjugation
+    // built on it would quietly disagree with everything else.
+    const first = "R U R' U'";
+    const second = "F2 L D";
+    expect(
+      statesEqual(
+        composeStates(stateOf(first), stateOf(second)),
+        stateOf(`${first} ${second}`),
+      ),
+    ).toBe(true);
+  });
+
+  it('has the solved cube as its identity, on both sides', () => {
+    const state = stateOf("R U2 D' B M' D'");
+    expect(statesEqual(composeStates(solved, state), state)).toBe(true);
+    expect(statesEqual(composeStates(state, solved), state)).toBe(true);
+  });
+
+  it('undoes a state when composed with its inverse', () => {
+    for (const notation of ["R U R' U'", "M E' S2 R U", 'F']) {
+      const state = stateOf(notation);
+      expect(statesEqual(composeStates(state, invertState(state)), solved)).toBe(true);
+      expect(statesEqual(composeStates(invertState(state), state), solved)).toBe(true);
+    }
+  });
+
+  it('is associative', () => {
+    const [a, b, c] = [stateOf('R U'), stateOf("F' D2"), stateOf("M2 L")];
+    expect(
+      statesEqual(
+        composeStates(composeStates(a!, b!), c!),
+        composeStates(a!, composeStates(b!, c!)),
+      ),
+    ).toBe(true);
+  });
+
+  it('produces a valid state and touches neither operand', () => {
+    const [a, b] = [stateOf("R U R' M"), stateOf("E S' D2")];
+    const [beforeA, beforeB] = [cloneState(a!), cloneState(b!)];
+    const composed = composeStates(a!, b!);
+    expect(validateState(composed)).toEqual([]);
+    expect(statesEqual(a!, beforeA)).toBe(true);
+    expect(statesEqual(b!, beforeB)).toBe(true);
+  });
+
+  it('rejects an operand that is not a state', () => {
+    expect(() => composeStates(solved, {} as never)).toThrow();
+    expect(() => composeStates({} as never, solved)).toThrow();
   });
 });

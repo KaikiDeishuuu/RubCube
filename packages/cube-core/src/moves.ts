@@ -280,6 +280,43 @@ export function invertMove(move: Move): Move {
   };
 }
 
+/**
+ * Collapses turns of the same layer that nothing between them can disturb.
+ *
+ * Two layers on the same axis commute, so a move can reach back past any number
+ * of them to meet an earlier turn of its own layer. `R U R' U'` has nothing to
+ * collapse; `R L R2` is `R' L`, and `U D U2` is `U' D`.
+ *
+ * A two-phase solver needs this on its way out. Each phase forbids repeating a
+ * layer inside itself, but the phase boundary resets that filter, so a solution
+ * legitimately arrives as `R` followed by `R2` rather than as `R'`.
+ *
+ * The single pass is enough because the output it builds never holds two turns
+ * of one layer separated only by commuting ones — merging one keeps that true,
+ * so nothing new becomes reducible behind it.
+ */
+export function cancelMoves(moves: readonly Move[]): Move[] {
+  const reduced: Move[] = [];
+  for (const move of moves) {
+    assertMove(move);
+    let index = reduced.length - 1;
+    while (index >= 0 && layersAreDisjoint(reduced[index]!.face, move.face)) {
+      index -= 1;
+    }
+
+    if (index < 0 || reduced[index]!.face !== move.face) {
+      // Nothing to meet, or something on another axis blocks the way back.
+      reduced.push({ face: move.face, turns: move.turns });
+      continue;
+    }
+
+    const turns = (reduced[index]!.turns + move.turns) % 4;
+    if (turns === 0) reduced.splice(index, 1);
+    else reduced[index] = { face: move.face, turns: turns as TurnCount };
+  }
+  return reduced;
+}
+
 export function invertMoves(moves: readonly Move[]): Move[] {
   return [...moves].reverse().map(invertMove);
 }

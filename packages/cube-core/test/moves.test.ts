@@ -7,6 +7,7 @@ import {
   applyMoves,
   applyMovesInPlace,
   assertMove,
+  cancelMoves,
   layerAxis,
   invertMove,
   invertMoves,
@@ -17,6 +18,7 @@ import {
   serializeMove,
   serializeMoves,
 } from '../src/moves.js';
+import { generateRandomMoves } from '../src/scramble.js';
 import {
   assertValidState,
   cloneState,
@@ -170,6 +172,82 @@ describe('cubie move application', () => {
       expect(result.cp).not.toBe(base.cp);
       expect(result.eo).not.toBe(base.eo);
       expect(() => assertValidState(result)).not.toThrow();
+    }
+  });
+});
+
+
+describe('cancelMoves', () => {
+  const solved = createSolvedState();
+
+  /** Reduction must preserve the cube, which is the only thing that matters. */
+  function expectSameCube(notation: string): ReturnType<typeof parseMoves> {
+    const moves = parseMoves(notation);
+    const reduced = cancelMoves(moves);
+    expect(
+      cubeStatesEqual(applyMoves(solved, moves), applyMoves(solved, reduced)),
+    ).toBe(true);
+    return reduced;
+  }
+
+  it('leaves a sequence with nothing to collapse alone', () => {
+    expect(serializeMoves(expectSameCube("R U R' U'"))).toBe("R U R' U'");
+    expect(cancelMoves([])).toEqual([]);
+  });
+
+  it('merges adjacent turns of the same layer', () => {
+    // The case a two-phase solver produces: one phase ends on R, the next
+    // begins on R2, and together they are a single quarter turn.
+    expect(serializeMoves(expectSameCube('R R2'))).toBe("R'");
+    expect(serializeMoves(expectSameCube("R R'"))).toBe('');
+    expect(serializeMoves(expectSameCube('R2 R2'))).toBe('');
+    expect(serializeMoves(expectSameCube('R R R'))).toBe("R'");
+  });
+
+  it('reaches back past layers that commute with it', () => {
+    // U and D share an axis and never touch the same cubie, so the U turns meet
+    // through the D between them.
+    expect(serializeMoves(expectSameCube('U D U2'))).toBe("U' D");
+    expect(serializeMoves(expectSameCube('R M L R'))).toBe('R2 M L');
+    // Three layers of one axis are all mutually transparent.
+    expect(serializeMoves(expectSameCube("R M L R'"))).toBe('M L');
+  });
+
+  it('will not reach past a layer on another axis', () => {
+    expect(serializeMoves(expectSameCube('R U R'))).toBe('R U R');
+    expect(serializeMoves(expectSameCube('U R U'))).toBe('U R U');
+  });
+
+  it('collapses what a removal exposes', () => {
+    // R and R' vanish, which puts the two U turns next to each other.
+    expect(serializeMoves(expectSameCube("U R R' U"))).toBe('U2');
+    expect(serializeMoves(expectSameCube("R U U' R'"))).toBe('');
+  });
+
+  it('returns moves of its own rather than the caller\'s', () => {
+    const moves = parseMoves('R R2 U');
+    const before = serializeMoves(moves);
+    const reduced = cancelMoves(moves);
+    expect(serializeMoves(moves)).toBe(before);
+    // Every other move helper hands back fresh objects; a result that aliased
+    // its input would be the one place a caller could not hold on to safely.
+    for (const move of reduced) expect(moves).not.toContain(move);
+  });
+
+  it('rejects anything that is not a move', () => {
+    expect(() => cancelMoves([{ face: 'X', turns: 1 }] as never)).toThrow(TypeError);
+  });
+
+  it('preserves the cube across long random sequences', () => {
+    // Property rather than example: any reduction that changes the cube is a
+    // bug no matter how plausible the output looks.
+    for (let seed = 0; seed < 200; seed += 1) {
+      const moves = generateRandomMoves(20, seed);
+      const reduced = cancelMoves(moves);
+      expect(reduced.length).toBeLessThanOrEqual(moves.length);
+      expect(
+        cubeStatesEqual(applyMoves(solved, moves), applyMoves(solved, reduced)),
+      ).toBe(true);
     }
   });
 });

@@ -255,6 +255,68 @@ function arraysEqual(left: Uint8Array, right: Uint8Array): boolean {
 }
 
 /** Structural equality over all four cubie arrays. */
+/**
+ * The state you reach by putting a cube already in `first` through `second`.
+ *
+ * The cubie group's operation, written the same way {@link applyMove} writes
+ * it: a position takes whatever `first` had at the position `second` draws
+ * from, and the two twists add. `applyMoves(s, moves)` is this composed with
+ * the moves' own state, which is what makes conjugation — rewriting a cube into
+ * a rotated frame — expressible without a second permutation table.
+ */
+export function composeStates(first: CubeState, second: CubeState): CubeState {
+  assertValidState(first);
+  assertValidState(second);
+  const result = createSolvedState();
+
+  for (let position = 0; position < CORNER_COUNT; position += 1) {
+    const from = second.cp[position]!;
+    result.cp[position] = first.cp[from]!;
+    result.co[position] = (first.co[from]! + second.co[position]!) % 3;
+  }
+  for (let position = 0; position < EDGE_COUNT; position += 1) {
+    const from = second.ep[position]!;
+    result.ep[position] = first.ep[from]!;
+    result.eo[position] = (first.eo[from]! + second.eo[position]!) % 2;
+  }
+  for (let position = 0; position < CENTER_COUNT; position += 1) {
+    result.centers[position] = first.centers[second.centers[position]!]!;
+  }
+  return result;
+}
+
+/**
+ * The state that undoes this one.
+ *
+ * Composing a state with its inverse gives the solved cube, so a sequence that
+ * solves `invertState(s)` solves `s` when played backwards. That matters to the
+ * solver: the two directions are different search problems of very different
+ * difficulty, and running both is what keeps the hard cases from dominating.
+ *
+ * Positions and cubies swap roles. Where `s` says "position p holds cubie c",
+ * the inverse says "cubie c belongs at position p", and each twist is undone by
+ * its complement — which for edges, flipped or not, is the twist itself.
+ */
+export function invertState(state: CubeState): CubeState {
+  assertValidState(state);
+  const inverse = createSolvedState();
+
+  for (let position = 0; position < CORNER_COUNT; position += 1) {
+    const cubie = state.cp[position]!;
+    inverse.cp[cubie] = position;
+    inverse.co[cubie] = (3 - state.co[position]!) % 3;
+  }
+  for (let position = 0; position < EDGE_COUNT; position += 1) {
+    const cubie = state.ep[position]!;
+    inverse.ep[cubie] = position;
+    inverse.eo[cubie] = state.eo[position]!;
+  }
+  for (let position = 0; position < CENTER_COUNT; position += 1) {
+    inverse.centers[state.centers[position]!] = position;
+  }
+  return inverse;
+}
+
 export function statesEqual(left: CubeState, right: CubeState): boolean {
   return (
     left === right ||

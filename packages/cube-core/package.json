@@ -21,6 +21,7 @@
     }
   },
   "scripts": {
+    "bench:search": "tsc -p tsconfig.build.json && node scripts/benchmark-solver-search.mjs",
     "bench:tables": "tsc -p tsconfig.build.json && node scripts/benchmark-solver-tables.mjs",
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
