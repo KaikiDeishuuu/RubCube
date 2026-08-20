@@ -2,7 +2,6 @@ import {
   applyMove,
   cancelMoves,
   invertMoves,
-  type Face,
   type FaceMove,
   type Move,
 } from '../moves.js';
@@ -11,7 +10,7 @@ import {
   COORDINATE_SIZES,
   HTM_V1_MOVE_ORDER,
   PHASE2_MOVE_ORDER,
-  isCanonicalFaceSuccessor,
+  buildSuccessorMask,
 } from './constants.js';
 import {
   rankCornerOrientation,
@@ -171,31 +170,6 @@ export interface SolveSession {
 function defaultNow(): number {
   const timing = (globalThis as { performance?: { now?: () => number } }).performance;
   return typeof timing?.now === 'function' ? timing.now() : Date.now();
-}
-
-/**
- * Which moves may follow which, flattened for the inner loop.
- *
- * `isCanonicalFaceSuccessor` compares face letters; doing that per candidate
- * would put string comparison inside the hottest loop in the search. Row 0 is
- * the phase root, where anything may come first.
- */
-function buildSuccessorMask(order: readonly Readonly<Move>[]): Uint8Array {
-  const count = order.length;
-  const mask = new Uint8Array((count + 1) * count);
-  for (let previous = -1; previous < count; previous += 1) {
-    const previousFace: Face | null =
-      previous === -1 ? null : (order[previous]!.face as Face);
-    for (let next = 0; next < count; next += 1) {
-      mask[(previous + 1) * count + next] = isCanonicalFaceSuccessor(
-        previousFace,
-        order[next]!.face as Face,
-      )
-        ? 1
-        : 0;
-    }
-  }
-  return mask;
 }
 
 const PHASE1_SUCCESSORS = buildSuccessorMask(HTM_V1_MOVE_ORDER);

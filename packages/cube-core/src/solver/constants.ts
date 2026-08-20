@@ -85,6 +85,36 @@ export function isCanonicalFaceSuccessor(
   return CANONICAL_OPPOSITE_SUCCESSOR[previous] === next;
 }
 
+/**
+ * Which moves may follow which, flattened for the inner loop.
+ *
+ * {@link isCanonicalFaceSuccessor} compares face letters; doing that per
+ * candidate would put string comparison inside the hottest loop in a search.
+ * Row 0 is the search root, where anything may come first.
+ *
+ * Both searches share this because they must share the filter itself: the
+ * optimal solver is the oracle the two-phase solver is measured against, and
+ * an oracle that enumerates a different set of paths is not measuring the same
+ * thing.
+ */
+export function buildSuccessorMask(order: readonly Readonly<Move>[]): Uint8Array {
+  const count = order.length;
+  const mask = new Uint8Array((count + 1) * count);
+  for (let previous = -1; previous < count; previous += 1) {
+    const previousFace: Face | null =
+      previous === -1 ? null : (order[previous]!.face as Face);
+    for (let next = 0; next < count; next += 1) {
+      mask[(previous + 1) * count + next] = isCanonicalFaceSuccessor(
+        previousFace,
+        order[next]!.face as Face,
+      )
+        ? 1
+        : 0;
+    }
+  }
+  return mask;
+}
+
 /** Coordinate cardinalities from DESIGN-SOLVING.md section 2.2. */
 export const COORDINATE_SIZES: Readonly<Record<SolverCoordinate, number>> =
   Object.freeze({

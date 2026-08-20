@@ -18,6 +18,11 @@
       "development": "./src/solver/index.ts",
       "types": "./dist/solver/index.d.ts",
       "import": "./dist/solver/index.js"
+    },
+    "./optimal": {
+      "development": "./src/optimal/index.ts",
+      "types": "./dist/optimal/index.d.ts",
+      "import": "./dist/optimal/index.js"
     }
   },
   "scripts": {
@@ -27,7 +32,8 @@
     "coverage": "vitest run --coverage",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json",
-    "verify:corpus": "tsc -p tsconfig.build.json && node scripts/verify-solver-corpus.mjs"
+    "verify:corpus": "tsc -p tsconfig.build.json && node scripts/verify-solver-corpus.mjs",
+    "verify:optimal": "tsc -p tsconfig.build.json && node scripts/verify-optimal-corpus.mjs"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^3.2.4",

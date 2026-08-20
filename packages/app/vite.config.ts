@@ -1,8 +1,10 @@
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
+import { forbidNodeOnlyModules } from './build/forbid-node-only-modules.js';
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), forbidNodeOnlyModules()],
   server: {
     port: 5173,
   },

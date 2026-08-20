@@ -4,7 +4,7 @@
 >
 > DESIGN.md §2.1、§6.5 与 §8 给出目录、指标和粗粒度里程碑；本文把它们补齐到可实现的粒度。历史与教程扩展 §1.1 目标 A（人类可玩），其里程碑已经同步回主文，但不阻塞 benchmark v1。
 >
-> 本文中的状态空间与表大小来自明确的坐标基数推导；球层数量、表直径和公式保持性是实现必须复现的验收常数。M3a 的六张移动表和四张剪枝表已由穷举 oracle 固化，9/9/14/12 是当前实现复现的直径；M3b 搜索、M3c 最优搜索与 M3.5 教程仍未实现，不能把对应设计值提前写成实测结果。
+> 本文中的状态空间与表大小来自明确的坐标基数推导；球层数量、表直径和公式保持性是实现必须复现的验收常数。M3a 的六张移动表和四张剪枝表已由穷举 oracle 固化，9/9/14/12 是当前实现复现的直径；M3c 的球层数量 1/18/243/3,240/43,239/574,908 也已由实现复现。M3.5 教程仍未实现，不能把对应设计值提前写成实测结果。
 
 ---
 
@@ -156,7 +156,7 @@ Undo 是这里唯一的刚需——练习公式时没有 Undo 基本没法用。
 
 ## 2. 模块二：Kociemba 两阶段求解器
 
-对应 DESIGN.md §8 的 **M3a–b**。已落地的 M3a 位于 `cube-core/src/solver/{constants,coordinates,tables,artifact,types}.ts`；M3b 将新增 `kociemba.ts`。k≤9 真最优搜索是 M3c，计划单独放在 `cube-core/src/optimal/bidirectional.ts`；当前只有 `/solver` package subpath 已导出，Node/bench-only 的 `/optimal` 尚未落地。
+对应 DESIGN.md §8 的 **M3a–c**。M3a 位于 `cube-core/src/solver/{constants,coordinates,tables,artifact,types}.ts`，M3b 的搜索在同目录 `search.ts`（不是原计划的 `kociemba.ts`）。k≤9 真最优搜索是 M3c，位于 `cube-core/src/optimal/bidirectional.ts`，从 `/optimal` package subpath 单独导出；两个 subpath 都已落地，root barrel 都不再导出它们。
 
 ### 2.0 前置条件：中心块必须已归位
 
@@ -474,7 +474,9 @@ if (moves !== null && moves.length > 0) {
 - `TableStore` 是函数接口，不能通过 `postMessage` 注入。app 的 Worker 模块在 Worker 内构造 IndexedDB adapter；若方案 A 由主线程取资产，则只通过消息传 `TableArtifact` 数据。
 - 取消返回 `status: 'cancelled'`；预算耗尽和“长度上限内无解”使用各自的 `SolveResult` 分支。非法状态、表损坏和 Worker transport 故障以带 `requestId` 的 typed error 拒绝 promise。四者不能折叠成空 move 数组；空数组只表示输入本来已复原。
 
-包入口也要隔离：Kociemba 纯计算从 `@rubcube/cube-core/solver` 导出，Node-only 的最优求解器从 `@rubcube/cube-core/optimal` 单独导出；两者都不从 app 常用的 root barrel 再导出。生产构建加断言，浏览器 chunk 中不得出现 `optimal` 模块或 Node adapter。
+包入口也要隔离：Kociemba 纯计算从 `@rubcube/cube-core/solver` 导出，Node-only 的最优求解器从 `@rubcube/cube-core/optimal` 单独导出；两者都不从 app 常用的 root barrel 再导出。
+
+**断言已落地**：`packages/app/build/forbid-node-only-modules.ts` 是一个 `apply: 'build'` 的 Vite 插件，在 `generateBundle` 里遍历 Rollup 的 `moduleIds` —— 也就是它真正拉进来的传递闭包，动态 import 与静态 import 一视同仁 —— 命中 `cube-core/(src|dist)/optimal/` 就让构建失败。**读模块图而不是搜产物文本**：文本搜索回答的是另一个问题（某个标识符有没有活过压缩），第一次名字被 mangle 就会静默失效。规则本身有单元测试，并且实际验证过——临时在 `main.tsx` 里 import `@rubcube/cube-core/optimal`，`vite build` 报 `Node-only modules reached the browser bundle`。目前表里只有 `optimal` 一条；Node adapter 尚不存在，等它出现再加，先写一条测不了的规则只是装饰。
 
 ### 2.8 最优解（k ≤ 9）
 
@@ -486,16 +488,27 @@ DESIGN.md §6.5 要 `optimality_ratio`，其中“k≤9 用真最优解”。实
 |---|---|---|---|---|---|---|
 | 恰好该深度的状态数 | 1 | 18 | 243 | 3,240 | 43,239 | 574,908 |
 
-因此从复原态 BFS 到深度 4 的闭球是 **46,741** 个状态；深度 5 的闭球是 621,649 个状态。实现步骤：
+**这六个数已由实现逐一复现**（`buildSolvedBall(r).layerSizes`）。闭球大小分别是 1 / 19 / 262 / 3,502 / 46,741 / 621,649。实现步骤，半径记为 `R`：
 
-1. 一次性从复原态 BFS 到深度 4。每个条目保存无碰撞状态键、精确深度、父条目和父 move。
-2. 对待求状态做反向 iterative deepening DFS，深度依次为 0..5，并使用与 §2.5 相同的 canonical move 过滤。每访问一个状态就查前向表。
-3. 记待求状态的真实最短距离为 `d*`。若 `d* ≤ 4`，深度 0 就直接命中；若 `5 ≤ d* ≤ 9`，任何少于 `d* - 4` 步的反向路径都不可能进入半径 4 的球，而一条最短路径在 `d* - 4` 步后必然进入；所以最早命中的迭代给出的就是真最优长度。
-4. 若反向路径是 `scrambled → meet`，表中的父路径是 `solved → meet`，结果为 `backwardPath + invertMoves(forwardPath)`。最终仍用 `applyMoves` 独立验证。
+1. 一次性从复原态 BFS 到深度 `R`。每个条目保存无碰撞状态键、父条目和父 move；**精确深度不单独存**——它就是父链的长度，另存一列只是把同一个事实抄第二遍，而 BFS 自己的层边界已经把构建期需要的那份提供了。**用全部 18 个走法展开，不用 canonical 子集**——子集也是完备的，但它的完备性依赖一条关于约简序列的论证，而这张表正是别的论证要拿来对照的东西。按状态去重已经做掉了该做的剪枝，代价只付一次。
+2. 对待求状态做反向 iterative deepening DFS，深度依次为 `0..9-R`，并使用与 §2.5 相同的 canonical move 过滤。只在**边界**查前向表。
+3. 记待求状态的真实最短距离为 `d*`。任何一次命中都**本身就是**一条长 `j + f` 的解（`j` 为反向步数、`f` 为球内深度），所以早于 `d* - R` 的迭代若命中就会与 `d*` 最短矛盾，不可能发生；而一条最短路径的倒数第 `R` 个状态按定义在球内，所以第 `d* - R` 次迭代必然命中。于是首次命中的迭代恰是 `d* - R`，它找到的每个命中都满足 `d* - R ≤ j + f ≤ d*`，只剩 `j + f = d*` 一种可能。**这就是为什么可以在首次命中处直接返回、而且只需查边界。**
+4. 若反向路径是 `scrambled → meet`，表中的父路径是 `solved → meet`，结果为 `backwardPath + invertMoves(forwardPath)`。最终仍用 `applyMoves` 独立验证，见下。
 
-“哈希表”不能暗含允许碰撞：完整魔方状态需要超过 64 bit 的无损编号。要么使用无损的多 word key，要么哈希命中后比较保存的完整 packed state。DFS 可用当前路径防环和跨迭代去重优化，但任何优化都不得剪掉某个深度内的 canonical 路径。
+**半径 R 是这里唯一的性能决策**，因为差额要由反向搜索补上。本节原先写的是 `R=4`、反向 0..5；每边 200 个 9 步打乱实测下来，`R=5` 快约十倍：
 
-验收语料里的 `k` 是生成打乱的步数上限，只保证 `d* ≤ k`，不保证真实距离恰好等于 k；求解器返回的是状态本身的 `d*`。该模块只从 `@rubcube/cube-core/optimal` 暴露给 Node `bench`，并由 §2.7 的 bundle 断言保证不进浏览器包。
+| R | 球大小 | 构建 | 常驻内存 | 9 步解 P50 | 超范围拒绝 P50 |
+|---|---|---|---|---|---|
+| 4 | 46,741 | 17 ms | 2 MB | 59.7 ms | 106.5 ms |
+| 5 | 621,649 | 233 ms | 31 MB | **6.2 ms** | **11.2 ms** |
+
+四个难例就把构建成本赚回来了，语料一开跑就越过，所以**默认改为 `R=5`**。`R=4` 保留并继续测试：两者必须在每个状态上给出同一距离，这条交叉检验是单一半径给不出的。
+
+“哈希表”不能暗含允许碰撞：完整魔方状态需要超过 64 bit 的无损编号。实现用 4 个 32 位 word 直接打包原始的 `cp/co/ep/eo`（24 + 16 + 32 + 28 bit），哈希只决定查哪个槽，命中后逐 word 比较。**刻意不用 rank**：rank 更紧（12 元置换只要 29 bit 而不是 48），但原始打包的单射性对声明范围内的任意取值都成立，而不是只对物理合法的魔方成立——这是一条没有前提可以搞错的断言。DFS 可用当前路径防环和跨迭代去重优化，但任何优化都不得剪掉某个深度内的 canonical 路径。
+
+**答案出模块前先用 `applyMoves` 回放验证。** 搜索要经过打包键、哈希索引和父链才拿到结果，其中任何一处出错都表现为一条看起来很合理的序列而不是崩溃，而且有些错**从外部触发不了**：丢掉一个 key 分量只会在两个魔方在索引里撞槽时给错答案，没有哪个打乱会刻意造出这种碰撞。回放一遍的成本相对刚展开的十万个节点可以忽略，它换来的是「错的 benchmark 分母」变成「一条 stack trace」。同样地，`cancelMoves` 不得缩短答案——最优处本来就不可能缩短，这个检查把那句推理变成断言。球的大小也一样断言：`twist` 忘记取模会立刻得到 `Ball of radius 5 exceeded its published size of 621649`，而不是一张悄悄错掉的表。
+
+验收语料里的 `k` 是生成打乱的步数上限，只保证 `d* ≤ k`，不保证真实距离恰好等于 k；求解器返回的是状态本身的 `d*`。（实测中 `generateRandomMoves` 在 k ≤ 9 时**每一例都恰好 `d* = k`**：它禁止相邻同面和同轴三连，这个过滤在这个长度上已经足以保证序列本身最短。所以本语料并未覆盖 `d* < k` 的情形。）该模块只从 `@rubcube/cube-core/optimal` 暴露给 Node `bench`，并由 §2.7 的 bundle 断言保证不进浏览器包。
 
 ### 2.9 验收
 
@@ -510,7 +523,7 @@ DESIGN.md §6.5 要 `optimality_ratio`，其中“k≤9 用真最优解”。实
 | 热路径速度 | 声明 CPU、浏览器/Node 版本和电源模式；表已 ready、JIT 预热后，纯求解 P50 < 50 ms、P99 < 300 ms。另报 Worker 往返 P50/P99，不把 300 ms deadline 截断后的样本当作“<300 ms” |
 | 冷路径速度 | 分开报告生成、校验、序列化、缓存写入、缓存命中加载和资产解码的 P50/P95；以 §2.6 的门槛决定 A/B |
 | Worker | caller 的四个 buffer 求解前后均未 detach；ready 前请求、并发请求、cancel、Worker error、IndexedDB 失败及求解期间 revision 改变都有集成测试，陈旧结果不会 enqueue |
-| 最优解 | 先断言 BFS 精确层数 1/18/243/3,240/43,239/574,908；固定 seed 为每个 k=1..9 生成同量语料，结果必须复原且不长于原打乱。k≤6 与独立 BFS oracle 逐例一致；k=7..9 的固定样本再与 test-only 独立 IDA* 或可信参考实现逐例一致，不能只用“≤打乱长度”冒充最优性证明 |
+| 最优解 | 先断言 BFS 精确层数 1/18/243/3,240/43,239/574,908；固定 seed 为每个 k=1..9 生成同量语料，结果必须复原且不长于原打乱。k≤6 与独立 BFS oracle 逐例一致；k=7..9 的固定样本再与 test-only 独立 oracle 逐例一致，不能只用“≤打乱长度”冒充最优性证明。另断言两个半径在每个状态上给出同一距离 |
 | 距离代理 | 使用 DESIGN.md §9 的唯一 M3d manifest：固定三类语料、seed、完整 solver profile、solver/table fingerprint、最低 coverage 与 go/no-go 阈值；统一报告 Spearman ρ、MAE、逆序率、最短解方向一致率和 Lipschitz 违规率。随机游走只作对照；失败则整体切换指标版本，不逐样本混用 PDB |
 | 代码覆盖率 | ≥ 90%（沿用仓库标准；不要和 M3d 的有效 proxy coverage 混淆） |
 
@@ -555,11 +568,52 @@ DESIGN.md §6.5 要 `optimality_ratio`，其中“k≤9 用真最优解”。实
 
 **冷路径**：桌面浏览器分项已测，§2.6 的 A/B 门槛据此关闭并选定方案 B，详见该节表格。
 
-**尚未测量**：移动设备（§2.6 的另一半证据）；资产解码路径（方案 A 未采用，故无此路径）；M3c 最优解与 M3d 距离代理。
+**尚未测量**：移动设备（§2.6 的另一半证据）；资产解码路径（方案 A 未采用，故无此路径）；M3d 距离代理。M3c 见下节。
 
 完整 profile（含 `hardMax` / `targetLength` / `BENCH_SOLVER_NODE_BUDGET` / move order / 节点计数版本）、语料数量、seed、参考硬件说明和 solver/table fingerprint 都提交进仓库，报告里原样输出，不能跑完以后按结果调预算。墙钟 `budgetMs` 只用于 app SLA；benchmark 若要比较耗时，算法输入仍保持固定节点预算。
 
-最优解校准与距离代理验证都不是走过场。M3d profile 如果不过预注册门槛，§6.5 的核心指标就整体换成 PDB 下界或新的组合指标；**建议 M3b 一有可运行基线就立刻跑验证**。
+最优解校准与距离代理验证都不是走过场。M3d profile 如果不过预注册门槛，§6.5 的核心指标就整体换成 PDB 下界或新的组合指标；**M3c 已落地，M3d 的前置条件已具备**。
+
+### M3c 实测
+
+同一参考硬件（i7-9750H / WSL2 / Node 22.23.2，插电）。
+
+**球层数量**（`buildSolvedBall(r).layerSizes`，半径 0..5 逐一断言）：**1 / 18 / 243 / 3,240 / 43,239 / 574,908**，与 §2.8 的表逐个相符。这是最先跑的一项：下面每一条都建立在这张表上。
+
+**语料**（`npm run verify:optimal`，seed `0x4f505431`，k=1..9 各 200 例，两个半径各跑一遍）：
+
+| 项 | 结果 |
+|---|---|
+| 状态 | **3,600 / 3,600 返回 `optimal`**，无一例外 |
+| 解验证 | 全部 `applyMoves` 复原；输入五个数组求解前后逐字节未变 |
+| 不长于打乱 | 全部满足；实际上每一例都恰好 `d* = k` |
+| 交叉半径 | R=4 与 R=5 在全部 1,800 个状态上给出**同一距离** |
+| 超范围拒绝 | 50 / 50 均匀随机状态返回 `beyond-reach`，`limit = 9`，没有一例伪装成空解 |
+
+**节点与耗时**（R=5，反向深度 ≤ 4；工作量随 k 单调上升，可预测，这正是选双向搜索而非 IDA* 的理由）：
+
+| k | 节点 P50 / P95 / max | 耗时 P50 / P95 / max |
+|---|---|---|
+| ≤5 | 1 / 1 / 1 | 0.01 ms |
+| 6 | 10 / 19 / 20 | 0.01 / 0.02 / 0.17 ms |
+| 7 | 172 / 268 / 280 | 0.06 / 0.09 / 0.71 ms |
+| 8 | 2,018 / 3,537 / 3,774 | 0.46 / 0.81 / 0.89 ms |
+| 9 | 28,082 / 47,790 / 50,484 | **6.16 / 11.01 / 14.24 ms** |
+| 超范围 | 走满 `0..4` 全部迭代 | 11.22 / 11.76 / 12.30 ms |
+
+k ≤ 5 只有 1 个节点，因为 R=5 的球直接覆盖了它们：第 0 次迭代就命中。
+
+**最优性**（测试套件，`packages/cube-core/test/optimal.test.ts`）。oracle 在 `test/helpers/optimal-oracle.ts`，**只用公开的 `ALL_HTM_MOVES` / `applyMove` 和标准库容器**：没有打包键、没有扁平走法表、没有 canonical successor mask、没有父链，剪枝也只有「不连续转同一面」这一条（任何最短解都不会连转同面）。它对每个状态取**全部反向路径的最小值**，而不是首次命中就返回——被测模块正是靠一条「哪次迭代才可能先命中」的论证提前返回的，一个做同样论证的 oracle 就不是在检查它了。
+
+默认 k=1..9 各 3 例；`RUBCUBE_OPTIMAL_N=10` 跑过一次共 90 例，**逐例一致，无一例外**。（升到 10 会把套件从 11 s 拉到 28 s：确认一个 9 步答案要 oracle 做一次两秒的深度 5 扫描。）
+
+与 §2.9 原文的差别，如实记录：**oracle 不是 IDA\*，也不是第三方参考实现，而是我自己写的第二份实现**。它与被测模块唯一共享的是「中间相遇」这个想法本身——上面列的每一个部件出错都会改变其中一边的答案而不会同时改变两边，但如果这个想法本身有问题，两边会一起错。另外原文写「k≤6 与独立 BFS oracle」，实现里纯 BFS 查表覆盖到 d ≤ 4（oracle 半径就是 4，再往上 `Map` 要 621,649 个字符串、约 900 MB，不适合放进测试进程），d = 5..9 由同一 oracle 的中间相遇路径覆盖。交叉半径检验是第三条独立证据。
+
+**变异测试**：13 个针对性变异，其中 10 个被杀。存活的三个都经过确认——`hash-ignores-w3`（只影响散列分布，比较仍然逐 word，是性能问题不是错误）、`no-canonical-filter`（过滤器是纯优化，去掉只会变慢）、以及两条防御性断言本身（按定义无法从外部触发）。`assertSolution` 确实是活的守卫而不是装饰：`forward-path-not-inverted` 和 `ball-path-not-reversed` 都触发了 `Optimal search returned a sequence that does not solve the cube`；球的大小断言同样如此，`twist-not-reduced` 触发 `Ball of radius 5 exceeded its published size`。
+
+**代码覆盖率**：`bidirectional.ts` 语句 96.57% / 分支 93.61%，未覆盖的四处全部是上述防御性 `throw`。`cube-core` 整体 97.21% / 93.98%，达标。
+
+**Bundle 隔离**：见 §2.7，断言已落地并实测触发。
 
 ---
 
@@ -827,26 +881,26 @@ DESIGN.md §8 是已经同步的粗粒度路线图；这里给出细化语义。
 | **M2.5** | commit provenance、baseState 历史 reducer、Undo、倒带、fallback 等价 | 练习可用；历史状态机性质测试通过 |
 | **M3a** | 坐标、移动表、剪枝表、artifact/cache 契约 + 跨端表大小/耗时实测 | 定下 §2.6 的方案 A 还是 B |
 | **M3b** | 两阶段搜索 + Worker client/cache adapter | 游戏内「快速自动复原 / 求解器下一步」；产生候选 `progress_score` |
-| **M3c** | 双向最优解（Node only） | k≤9 的 `optimality_ratio` 可算 |
+| **M3c** ✅ | 双向最优解（Node only） | k≤9 的 `optimality_ratio` 可算 |
 | **M3d** | **距离代理验证 profile**（DESIGN.md §9 待决 1） | 相关性、误差、逆序、局部一致性与 coverage 达标后才启用 `progress_score`；不成立则切换指标实现 |
 | **M3.5** | 模块三：策略表、七阶段 policy、公式变体、高亮/fallback、step coordinator、教程 UI | 可跟练、提示、演示的教学模式 |
 
 依赖关系不是简单按小数顺序串行：
 
 - `M3a → M3b → M3d` 是 benchmark 指标关键路径；M3d 没给结论前可以开发 M4 runner，但不能发布使用该 `progress_score` 的正式报告
-- M3c 依赖规则内核，不进入浏览器，可与 M3b 后半段并行
+- M3c 依赖规则内核，不进入浏览器，可与 M3b 后半段并行（实际是在 M3b 收口后做的）
 - M2.5 依赖 renderer 的 commit provenance；M3.5 依赖 §3.7 的 renderer 高亮扩展和 M2.5 的 batch/command lifecycle、step completion boundary，但**不依赖 Kociemba solver**
 - M3.5 是新增的人类产品范围，不阻塞 M4/M5 benchmark v1；若排期冲突可后移，但不能把 M3b 的无解释“下一步”冒充教学提示
 
 **M3a 的实测结果决定 M3b 的资产形态，二者不要并行拍板。** 主文 §2.1 目录、§8 里程碑和算法名称必须持续与这份细化同步；当前两份文档采用同一组 M2.5/M3a–d/M3.5 语义。
 
-**当前 M3b 状态（2026-08-20）：** 两阶段搜索、朝向入口（§2.0）、可暂停内核、四种返回分支与确定性均已完成并实测（见 §2.9）；Worker、client、IndexedDB 表缓存与游戏内「Solve」按钮已接通。
+**当前 M3b/M3c 状态（2026-08-20）：** 两阶段搜索、朝向入口（§2.0）、可暂停内核、四种返回分支与确定性均已完成并实测（见 §2.9）；Worker、client、IndexedDB 表缓存与游戏内「Solve」按钮已接通。**M3c 双向最优解已落地并实测**（见「M3c 实测」），`optimality_ratio` 的分母现在算得出来，M3d 的前置条件已具备。
 
 浏览器实测（headless Chromium / SwiftShader，同一台机器）：冷启动首次求解走 `Preparing tables → Building cp · 0% → … → 答案`，约 1.0 s；同一页第二次求解约 0.28 s；**重载后走 `Preparing tables → Searching → 答案`（约 0.33 s），完全没有 `Building` 阶段**——这是缓存确实命中的证据，比拿墙钟比大小可靠，因为轮询粒度比冷热差还粗。求解期间主线程保持响应；表生成与加载不计入 solve 预算。
 
 打包隔离已核对：`UDEdgePerm` / `RBCT` 等求解器符号只出现在 worker chunk（44 KB），主 bundle 里没有；client 在**首次点击 Solve 时才构造 Worker**，所以从不求解的访客不会下载它。
 
-尚未落地的部分：`optimal`（M3c）还不存在，因此 §2.7 要求的「浏览器 chunk 中不得出现 optimal 模块」暂时无从断言；Worker 往返的 P50/P99 与移动设备实测也还没有。
+§2.7 要求的「浏览器 chunk 中不得出现 optimal 模块」现在断言得出来了，也已经断言：构建插件在 `generateBundle` 里遍历 Rollup 模块图，临时 import 一下确实让 `vite build` 失败。尚未落地的是移动设备实测。
 
 当前 M3a 的代码部分与单机 Node 基线已完成；目标浏览器、移动设备、Node CI、持久化/cache-hit 与资产 I/O 的决策级测量尚未完成，所以本里程碑仍是进行中，方案 A/B 仍未选定。
 

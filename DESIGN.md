@@ -58,8 +58,10 @@ packages/
         tables.ts     # 移动表与 nibble 剪枝表生成
         artifact.ts   # RBCT 二进制契约与注入式缓存
         types.ts      # artifact/store/profile 公共类型
-        kociemba.ts   # M3b：两阶段搜索（基线 & 上界）
+        search.ts     # M3b：两阶段搜索（基线 & 上界）
+        orientation.ts # 朝向归一化与搜索用轴系
       optimal/
+        index.ts      # 独立 /optimal package subpath
         bidirectional.ts # k<=9 的双向最优搜索；Node/bench 专用入口
       tutorial/
         stages.ts     # 七阶段判据、锁定块与进度阶梯
@@ -71,6 +73,9 @@ packages/
       rng.ts          # mulberry32 种子随机
     scripts/
       benchmark-solver-tables.mjs # M3a：Node 冷生成/编解码/压缩基准
+      benchmark-solver-search.mjs # M3b：解长度/耗时 profile 对比
+      verify-solver-corpus.mjs    # M3b：10,000 均匀随机状态验收语料
+      verify-optimal-corpus.mjs   # M3c：k=1..9 最优解语料与球层数量断言
       generate-tutorial-policy.ts # M3.5：Node 构建工具；不进入运行时 package exports
   cube-render/        # Three.js 渲染 + 动画 + 交互
   app/                # React 游戏界面、历史、计时器、统计、教程与 solver Worker
@@ -85,7 +90,7 @@ packages/
 
 **硬性约束：`cube-core/src` 不得 import 任何渲染或 Node 专属 API。** 这是整个设计的基石。默认入口只导出 state/moves/facelet/rng，以及不依赖求解器的随机状态/随机步采样；`/solver`、`/optimal`、`/metrics`、`/tutorial` 都是独立 package subpath，根入口不得重新导出。WCA-style 的“随机状态 → 求解 → 逆序”由 app 的 solver Worker 编排，不能放进默认入口的 `scramble.ts` 形成 `root → solver` 的间接依赖。浏览器 app 不得静态依赖 Node-only 的 `/optimal`；教程用领域 `CubieRef`/`SlotRef`，由 app 映射到 `cube-render` 的视觉 ID。`cube-core/scripts` 是可使用 Node 的构建工具，但不属于运行时源码，也不进入 exports。
 
-截至 2026-08-17，只有 `/solver` 子路径及其 M3a 表层已经落地；`/optimal`、`/metrics`、`/tutorial` 和 `kociemba.ts` 仍属于后续里程碑。生产 app 的模块闭包必须继续保持不含 `/solver` 与 `/optimal`。
+截至 2026-08-20，`/solver`（M3a 表层 + M3b 搜索）与 `/optimal`（M3c）已经落地；`/metrics` 和 `/tutorial` 仍属于后续里程碑。生产 app 的主 bundle 必须继续保持不含 `/solver` 与 `/optimal`：`/solver` 只出现在 solver worker chunk 里，`/optimal` 一个 chunk 都不许出现，后者由 `packages/app/build/forbid-node-only-modules.ts` 在生产构建中遍历 Rollup 模块图断言。
 
 ---
 
@@ -895,13 +900,15 @@ Opus 5 / Sonnet 5 支持长边 2576px 的高分辨率输入（单图最多约 47
 | **M4** | `bench`：任务生成、Anthropic 适配器、赛道 A、Batch 跑批 | 第一份 T1/T3 评测报告 |
 | **M5** | 赛道 B 工具循环、T6 视觉任务、HTML 聚合报告 | 完整 benchmark v1 |
 
-**M0 → M3a → M3b → M3d 是关键路径**：M3b 只提供候选距离代理，必须经过 M3d 才能进入正式指标。M2.5 与 M3.5 扩展人类可玩目标，但不阻塞 benchmark；M3c 只阻塞短打乱的真最优校准。
+**M0 → M3a → M3b → M3d 是关键路径**：M3b 只提供候选距离代理，必须经过 M3d 才能进入正式指标。M2.5 与 M3.5 扩展人类可玩目标，但不阻塞 benchmark；M3c 只阻塞短打乱的真最优校准，现已完成。
 
 **当前状态（2026-08-20）：** M2 的计时器与统计已补齐（WCA 蓄力、可选观察、罚时、ao5/ao12/ao100、IndexedDB 持久化、CSV 导出），转动音效已接入；多会话管理仍未做。
 
 M3a 已完成，**A/B 决策门已关闭：选方案 B（首次在 Worker 生成、存 IndexedDB）**。桌面浏览器实测冷生成 P95 726 ms，远低于 3 s 门槛；缓存命中 11 ms 读 + 112 ms 解码。移动设备仍未测，见 DESIGN-SOLVING.md §2.6 的保留意见。
 
 M3b 的两阶段搜索、朝向入口、Worker/client/IndexedDB 缓存与游戏内求解按钮已完成。10,000 个均匀随机状态（seed `0x52554243`）全部返回 `solved`；纯求解 P50 28.5 ms / P99 280 ms，Worker 往返 P50 35.5 ms / P99 271 ms。**唯一未达标的验收项是解长度中位数（21，标准是 ≤ 20）**，原因与后续选项见 DESIGN-SOLVING.md §2.9。
+
+M3c 的 k≤9 双向最优搜索已完成，`optimality_ratio` 的分母现在算得出来。球的精确层数 1/18/243/3,240/43,239/574,908 由实现复现；k=1..9 各 200 例共 3,600 次求解全部返回 `optimal` 且验证复原，两个球半径逐例给出同一距离；9 步状态 P50 6.2 ms。最优性由一份只依赖公开走法引擎的独立 oracle 逐例核对。浏览器 bundle 隔离断言同时落地。**M3d 的前置条件已经具备。**
 
 ---
 
@@ -917,7 +924,7 @@ M3b 的两阶段搜索、朝向入口、Worker/client/IndexedDB 缓存与游戏�
 
 **待决问题（需要先做实验才能定）：**
 
-1. `progress_score` 用 Kociemba 解长度是否足够可靠？唯一的 M3d manifest 固定语料类别（已知真距离、模型实际轨迹、相邻状态对）、seed、solver/table fingerprint、`hardMax`、`targetLength`、`maxNodes`、canonical move order、节点计数规则版本、最低 coverage 与 go/no-go 阈值，并统一报告 Spearman ρ、MAE、逆序率、最短解方向一致率及 `|d(s)-d(s·m)| > 1` 的 Lipschitz 违规率；无方向随机游走只作对照，不要求单调。如果噪声超过预设阈值，整体切换到角块/棱块 PDB 下界或组合指标，不能在同一指标版本里逐样本混用。
+1. `progress_score` 用 Kociemba 解长度是否足够可靠？唯一的 M3d manifest 固定语料类别（已知真距离、模型实际轨迹、相邻状态对）、seed、solver/table fingerprint、`hardMax`、`targetLength`、`maxNodes`、canonical move order、节点计数规则版本、最低 coverage 与 go/no-go 阈值，并统一报告 Spearman ρ、MAE、逆序率、最短解方向一致率及 `|d(s)-d(s·m)| > 1` 的 Lipschitz 违规率；无方向随机游走只作对照，不要求单调。如果噪声超过预设阈值，整体切换到角块/棱块 PDB 下界或组合指标，不能在同一指标版本里逐样本混用。**M3c 已完成，「已知真距离」那一类语料现在生成得出来了，这条问题不再有前置阻塞。**
 2. 赛道 B 的 30 次工具调用上限是否合理？先跑 10 个任务看分布再定。
 3. 三种表示（facelet / JSON / ASCII）要不要都跑？成本 ×3。建议先在 Haiku 上做小样本对照，如果差异 <5% 就只保留 facelet。
 4. T6 视觉任务两张图够不够覆盖 54 格？等轴测双视角理论上能看到全部 6 面，但边缘格子透视变形严重——可能需要三视角或正交投影。

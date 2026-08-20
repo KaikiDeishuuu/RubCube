@@ -25,7 +25,13 @@ M2.5 的历史与回放运行路径也已经接通：
 - app 使用 `baseState + entries` 原子维护已提交历史，界面已提供 Undo、完整倒带和取消播放；Reset/打乱也经过同一 dispatcher
 - WebGL 上下文丢失时从最后一个已提交整数状态切换到 fallback，不读取动画中的浮点瞬时状态
 
-M3a 的核心代码已经落地：`@rubcube/cube-core/solver` 现在提供六种 Kociemba 坐标、6 张移动表、4 张 nibble 剪枝表、版本化二进制 artifact 和注入式缓存加载。四张表的 9/9/14/12 直径已由穷举测试固定。当前仍缺目标桌面浏览器和移动设备上的决策级冷路径基准，因此 Worker 生成缓存与打包资产之间尚未选型；M3b 的两阶段搜索、Worker 和自动求解 UI 也尚未实现。
+求解器已经落地到 M3c：
+
+- **M3a** —— `@rubcube/cube-core/solver` 提供六种 Kociemba 坐标、6 张移动表、4 张 nibble 剪枝表、版本化二进制 artifact 和注入式缓存加载。四张表的 9/9/14/12 直径由穷举测试固定。桌面浏览器冷路径已实测（冷生成 P95 726 ms），**方案 B（首次在 Worker 生成、存 IndexedDB）已选定**；移动设备仍未测。
+- **M3b** —— 两阶段搜索、可暂停内核、Worker、IndexedDB 表缓存和游戏内「Solve」按钮都已接通。10,000 个均匀随机状态全部求解成功，纯求解 P50 28.5 ms / P99 280 ms。唯一未达标的验收项是解长度中位数（21，标准是 ≤ 20）。
+- **M3c** —— `@rubcube/cube-core/optimal` 用中间相遇搜索给出 k≤9 的**真最优解**，供 benchmark 的 `optimality_ratio` 当分母。它是 Node/bench 专用的：生产构建会遍历 Rollup 模块图，把它挡在浏览器包外面。
+
+尚未实现的是 M3d 的距离代理验证和 M3.5 的分层教学。
 
 ## 开发
 
@@ -39,13 +45,21 @@ corepack pnpm -r coverage
 corepack pnpm -r build
 ```
 
-运行单进程 Node 表基准：
+运行求解器的基准与验收语料（每条都输出可归档的 JSON，语料、seed 和 profile 全部写死在脚本里）：
 
 ```sh
 corepack pnpm --filter @rubcube/cube-core bench:tables
 ```
 
-这条命令输出可归档的 JSON；当前仓库的 [`solver-tables-node-wsl2-2026-08-17.json`](packages/cube-core/benchmarks/solver-tables-node-wsl2-2026-08-17.json) 只是单机 Node 冷进程基线，不是方案 A/B 的跨端决策报告。
+```sh
+corepack pnpm --filter @rubcube/cube-core verify:corpus
+```
+
+```sh
+corepack pnpm --filter @rubcube/cube-core verify:optimal
+```
+
+`bench:tables` 输出的 [`solver-tables-node-wsl2-2026-08-17.json`](packages/cube-core/benchmarks/solver-tables-node-wsl2-2026-08-17.json) 只是单机 Node 冷进程基线，不是方案 A/B 的跨端决策报告——那份决策证据来自浏览器实测，见 DESIGN-SOLVING.md §2.6。`verify:corpus` 跑 M3b 的 10,000 个均匀随机状态，`verify:optimal` 跑 M3c 的球层数量断言与 k=1..9 语料。
 
 `-r` 不能省：根目录的 `test`、`build` 等脚本会再调用一次裸 `pnpm`，而 Corepack 只提供 `corepack pnpm` 这一个入口。执行过 `corepack enable` 生成全局垫片后，`pnpm test` 这类简写才可用。
 
@@ -81,4 +95,4 @@ const shortScramble = generateRandomMoves(8, 20260817);
 const randomState = generateRandomState(20260817);
 ```
 
-`generateRandomState` 等概率抽取满足魔方四项不变量的可达状态。操作台当前使用设计中的种子化 25 步回退打乱；完整 WCA 打乱序列还需要 M3b 的两阶段搜索与 Worker 集成：求解随机状态，再将解序列逆序。
+`generateRandomState` 等概率抽取满足魔方四项不变量的可达状态。操作台当前使用种子化的 25 步回退打乱；改用完整 WCA 随机状态打乱只差把已有的 solver Worker 接进打乱路径——求解随机状态，再将解序列逆序。
