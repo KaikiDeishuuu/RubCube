@@ -1,4 +1,5 @@
 import {
+  cloneState,
   createSolvedState,
   generateRandomMoves,
   isSolved,
@@ -6,6 +7,7 @@ import {
   parseMoves,
   serializeMove,
   serializeMoves,
+  statesEqual,
   toFacelets,
   type Face,
   type Move,
@@ -41,6 +43,8 @@ import {
   getUndoMove,
 } from './history.js';
 import { readSoundEnabled, writeSoundEnabled } from './preferences.js';
+import { createSolverClient, type SolverClient } from './solver/client.js';
+import type { ReadyProgress } from './solver/protocol.js';
 import { formatStat, summarise, toCsv } from './stats.js';
 import { useCubeStore } from './store.js';
 import {
@@ -98,6 +102,28 @@ const PENALTY_LABEL: Readonly<Record<Penalty, string>> = {
  * enough that a finished solve is durable well before the next one starts.
  */
 const SAVE_DEBOUNCE_MS = 400;
+
+/**
+ * What one in-game solve may spend.
+ *
+ * The measured P99 is about 6.2M nodes, so this leaves headroom for the tail
+ * without letting a pathological state hold the worker indefinitely. The
+ * deadline is the second fuse, for devices slower than the one this was
+ * measured on; a search stopped by either still returns its best solution so
+ * far, which is a longer sequence rather than no answer.
+ */
+const GAME_SOLVER_NODE_BUDGET = 12_000_000;
+const GAME_SOLVER_BUDGET_MS = 1_200;
+
+type SolverStatus = 'idle' | 'preparing' | 'searching' | 'done' | 'failed';
+
+function describeReady(progress: ReadyProgress): string {
+  if (progress.stage !== 'generating' || progress.total === undefined) {
+    return 'Preparing tables';
+  }
+  const percent = Math.round(((progress.completed ?? 0) / progress.total) * 100);
+  return `Building ${progress.table ?? 'tables'} · ${percent}%`;
+}
 
 let nextCommandSerial = 1;
 
@@ -183,9 +209,12 @@ function App() {
   const rendererRef = useRef<CubeRendererInstance | null>(null);
   const transportRef = useRef<CommitDispatcher | null>(null);
   const audioRef = useRef<TurnAudio | null>(null);
+  const solverRef = useRef<SolverClient | null>(null);
   const timerDigitsRef = useRef<HTMLSpanElement>(null);
   const [soundEnabled, setSoundEnabled] = useState(readSoundEnabled);
   const [coarsePointer, setCoarsePointer] = useState(matchesCoarsePointer);
+  const [solverStatus, setSolverStatus] = useState<SolverStatus>('idle');
+  const [solverDetail, setSolverDetail] = useState('Kociemba · two-phase');
 
   const cube = useCubeStore((store) => store.cube);
   const history = useCubeStore((store) => store.history);
@@ -632,6 +661,127 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    return () => {
+      solverRef.current?.dispose();
+      solverRef.current = null;
+    };
+  }, []);
+
+  const runSolver = useCallback(async (): Promise<void> => {
+    const transport = transportRef.current;
+    const store = useCubeStore.getState();
+    if (
+      transport === null ||
+      transport.isBusy ||
+      store.transportFatal ||
+      store.fatalInvariant !== null ||
+      // Inspection is time to look at the cube, not to have it solved.
+      LOCKED_PHASES.has(store.timer.phase)
+    ) {
+      return;
+    }
+    if (isSolved(store.cube)) {
+      setSolverStatus('done');
+      setSolverDetail('Already solved');
+      return;
+    }
+
+    // Built on first use rather than at start-up: generating the tables costs
+    // most of a second of CPU, and a visitor who never asks for a solve should
+    // never pay it.
+    solverRef.current ??= createSolverClient();
+    const client = solverRef.current;
+
+    // Everything the answer will be checked against, captured before the search
+    // starts. A solve is slow enough that the player can turn the cube, reset
+    // it or rescramble in the meantime.
+    const revision = store.commandRevision;
+    const snapshot = cloneState(store.cube);
+
+    setSolverStatus('preparing');
+    setSolverDetail('Preparing tables');
+    try {
+      await client.ready((progress) => setSolverDetail(describeReady(progress)));
+      if (solverRef.current !== client) return;
+
+      setSolverStatus('searching');
+      setSolverDetail('Searching');
+      const result = await client.solve(snapshot, {
+        hardMax: 30,
+        targetLength: 21,
+        maxNodes: GAME_SOLVER_NODE_BUDGET,
+        budgetMs: GAME_SOLVER_BUDGET_MS,
+      });
+      if (solverRef.current !== client) return;
+
+      if (result.status === 'cancelled') {
+        setSolverStatus('idle');
+        setSolverDetail('Cancelled');
+        return;
+      }
+      if (result.status === 'no-solution-within-hard-max') {
+        setSolverStatus('failed');
+        setSolverDetail('No solution within the length limit');
+        return;
+      }
+
+      const moves = result.status === 'solved' ? result.moves : result.best;
+      const latest = useCubeStore.getState();
+      // The three checks the protocol asks for, and all three are needed: a
+      // command can be accepted without the transport being busy yet, and a
+      // scramble-then-unscramble would leave the revision changed but the cube
+      // the same.
+      if (
+        transportRef.current !== transport ||
+        transport.isBusy ||
+        latest.commandRevision !== revision ||
+        !statesEqual(latest.cube, snapshot)
+      ) {
+        setSolverStatus('idle');
+        setSolverDetail('Cube changed · solution dropped');
+        return;
+      }
+
+      if (moves === null || moves.length === 0) {
+        setSolverStatus('failed');
+        setSolverDetail('Search ran out of budget with nothing to play');
+        return;
+      }
+
+      // Having it solved is not solving it. Ending the attempt before the moves
+      // are queued matters: once they land the cube is solved and the timer
+      // would otherwise record the run as a real time.
+      latest.dispatchTimer({ type: 'abort', at: performance.now() });
+
+      const accepted = transport.enqueue(moves, {
+        commandId: createCommandId('auto-solve'),
+        intent: 'forward',
+        origin: 'auto-solve',
+      });
+      if (!accepted) {
+        setSolverStatus('idle');
+        setSolverDetail('Playback busy · solution dropped');
+        return;
+      }
+      setSolverStatus('done');
+      setSolverDetail(
+        `${moves.length} moves · ${Math.round(result.elapsedMs)}ms · ` +
+          `${(result.nodes / 1_000).toFixed(0)}k nodes` +
+          (result.status === 'solved' ? '' : ' · budget'),
+      );
+      latest.setLastAction(`Solve · ${moves.length} moves`);
+    } catch (error) {
+      if (solverRef.current !== client) return;
+      setSolverStatus('failed');
+      setSolverDetail(error instanceof Error ? error.message : 'Solver failed');
+    }
+  }, []);
+
+  const cancelSolver = useCallback((): void => {
+    solverRef.current?.cancel();
+  }, []);
+
   const exportCsv = useCallback((): void => {
     const results = useCubeStore.getState().results;
     if (results.length === 0) return;
@@ -817,6 +967,8 @@ function App() {
     // The attempt this scramble replaces never finished, and its clock must not
     // survive into a solve of a different cube.
     store.dispatchTimer({ type: 'reset', at: performance.now() });
+    // Any answer still being searched for is about to be for the wrong cube.
+    solverRef.current?.cancel();
     store.setScramble(notation, seed);
     store.setFormulaError(null);
     store.setLastAction(`Scramble · seed ${seed}`);
@@ -829,6 +981,7 @@ function App() {
     transport.replaceState(createSolvedState());
 
     store.dispatchTimer({ type: 'reset', at: performance.now() });
+    solverRef.current?.cancel();
     store.setScramble('', null);
     store.setFormulaError(null);
     store.setLastAction('Reset · solved');
@@ -865,6 +1018,8 @@ function App() {
               : timerPenalty === 'dnf'
                 ? `DNF · ${holdPrompt} TO RETRY`
                 : holdPrompt;
+
+  const solverBusy = solverStatus === 'preparing' || solverStatus === 'searching';
 
   const controlsDisabled =
     renderMode === 'booting' || transportFatal || fatalInvariant !== null;
@@ -1178,6 +1333,39 @@ function App() {
               </button>
               <button className="button button--quiet" type="button" onClick={resetCube} disabled={renderMode === 'booting'}>
                 Reset
+              </button>
+            </div>
+          </section>
+
+          <section className="panel-section solver-section">
+            <div className="section-row-heading">
+              <span className="eyebrow">SOLVER / KOCIEMBA</span>
+              <span className="legend-copy">≤ 21 HTM</span>
+            </div>
+
+            <p
+              className={`solver-status solver-status--${solverStatus}`}
+              aria-live="polite"
+            >
+              {solverDetail}
+            </p>
+
+            <div className="action-row">
+              <button
+                className="button button--primary"
+                type="button"
+                onClick={() => void runSolver()}
+                disabled={solverBusy || controlsDisabled || transportBusy || solved}
+              >
+                {solverBusy ? 'Solving…' : 'Solve'}
+              </button>
+              <button
+                className="button button--quiet"
+                type="button"
+                onClick={cancelSolver}
+                disabled={solverStatus !== 'searching'}
+              >
+                Cancel
               </button>
             </div>
           </section>
