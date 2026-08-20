@@ -12,9 +12,9 @@ import { generateSolverTables, solve } from '../dist/solver/index.js';
 import { solvedBall, solveOptimal } from '../dist/optimal/index.js';
 import {
   DISTANCE_PROXY_PROFILE,
-  M3D_CORPUS,
-  M3D_FINGERPRINT,
-  M3D_THRESHOLDS,
+  M3D_PROXY_CORPUS,
+  M3D_PROXY_FINGERPRINT,
+  M3D_PROXY_THRESHOLDS,
   TRAJECTORY_SURROGATE,
   agreementRate,
   bestProgress,
@@ -24,7 +24,7 @@ import {
   meanAbsoluteError,
   meanSignedError,
   measureProxy,
-  progressScore,
+  proxyProgressScore,
   readProxy,
   spearmanRho,
 } from '../dist/metrics/index.js';
@@ -95,8 +95,8 @@ function probe(state) {
  * run, because it needs a move that is known to lower the true distance.
  */
 function knownDistanceClass() {
-  const { minLength, maxLength } = M3D_CORPUS.knownDistance;
-  const perLength = scaled(M3D_CORPUS.knownDistance.perLength);
+  const { minLength, maxLength } = M3D_PROXY_CORPUS.knownDistance;
+  const perLength = scaled(M3D_PROXY_CORPUS.knownDistance.perLength);
   const truth = [];
   const proxy = [];
   const lengths = [];
@@ -109,7 +109,7 @@ function knownDistanceClass() {
     for (let index = 0; index < perLength; index += 1) {
       const scramble = generateRandomMoves(
         length,
-        M3D_CORPUS.seed + length * 1_000 + index,
+        M3D_PROXY_CORPUS.seed + length * 1_000 + index,
       );
       const state = applyMoves(createSolvedState(), scramble);
       const optimal = solveOptimal(state, { ball });
@@ -177,9 +177,9 @@ function knownDistanceClass() {
  * solver's reach, which is the only place a trajectory point has ground truth.
  */
 function trajectoryClass() {
-  const random = mulberry32(M3D_CORPUS.seed + 1);
-  const tasks = scaled(M3D_CORPUS.trajectory.tasks);
-  const { maxSteps, slipRate } = M3D_CORPUS.trajectory;
+  const random = mulberry32(M3D_PROXY_CORPUS.seed + 1);
+  const tasks = scaled(M3D_PROXY_CORPUS.trajectory.tasks);
+  const { maxSteps, slipRate } = M3D_PROXY_CORPUS.trajectory;
 
   const allLengths = [];
   const guidedDescents = [];
@@ -228,9 +228,9 @@ function trajectoryClass() {
     if (isSolved(current)) solvedTasks += 1;
 
     const final = points[points.length - 1];
-    const score = progressScore(initial.reading, final);
+    const score = proxyProgressScore(initial.reading, final);
     if (score !== null) finalScores.push(score);
-    const best = bestProgress(initial.reading, points);
+    const best = bestProgress(points.map((point) => proxyProgressScore(initial.reading, point)));
     validBest += best.validPoints;
     eligibleBest += best.eligiblePoints;
     if (best.value !== null) {
@@ -281,15 +281,15 @@ function trajectoryClass() {
  * the only evidence at all in the 10-to-21 band the benchmark lives in.
  */
 function adjacentClass() {
-  const random = mulberry32(M3D_CORPUS.seed + 2);
-  const perClass = scaled(M3D_CORPUS.adjacent.basesPerClass);
-  const { movesPerBase } = M3D_CORPUS.adjacent;
+  const random = mulberry32(M3D_PROXY_CORPUS.seed + 2);
+  const perClass = scaled(M3D_PROXY_CORPUS.adjacent.basesPerClass);
+  const { movesPerBase } = M3D_PROXY_CORPUS.adjacent;
 
   const byBase = {};
   const pooledDeltas = [];
   const pooledLengths = [];
 
-  for (const base of M3D_CORPUS.adjacent.bases) {
+  for (const base of M3D_PROXY_CORPUS.adjacent.bases) {
     const deltas = [];
     const lengths = [];
     const histogram = {};
@@ -340,9 +340,9 @@ function adjacentClass() {
  * once the walk is far enough out that everything is about twenty moves away.
  */
 function controlWalk() {
-  const random = mulberry32(M3D_CORPUS.seed + 3);
-  const walks = scaled(M3D_CORPUS.control.walks);
-  const { steps } = M3D_CORPUS.control;
+  const random = mulberry32(M3D_PROXY_CORPUS.seed + 3);
+  const walks = scaled(M3D_PROXY_CORPUS.control.walks);
+  const { steps } = M3D_PROXY_CORPUS.control;
 
   const byStep = Array.from({ length: steps + 1 }, () => []);
   const stepIndex = [];
@@ -404,14 +404,14 @@ const classC = adjacentClass();
 const control = controlWalk();
 
 const gates = [
-  gate('coverage.knownDistance', round(classA.coverage.ratio), '>=', M3D_THRESHOLDS.minCoverage),
-  gate('coverage.trajectory', round(classB.coverage.ratio), '>=', M3D_THRESHOLDS.minCoverage),
-  gate('coverage.adjacent', round(classC.coverage.ratio), '>=', M3D_THRESHOLDS.minCoverage),
-  gate('spearman', classA.spearman, '>=', M3D_THRESHOLDS.minSpearman),
-  gate('meanAbsoluteError', classA.meanAbsoluteError, '<=', M3D_THRESHOLDS.maxMeanAbsoluteError),
-  gate('inversionRate', round(classA.order.inversionRate), '<=', M3D_THRESHOLDS.maxInversionRate),
-  gate('directionAgreement', classA.directionAgreement, '>=', M3D_THRESHOLDS.minDirectionAgreement),
-  gate('lipschitzViolationRate', round(classC.lipschitz.rate), '<=', M3D_THRESHOLDS.maxLipschitzViolationRate),
+  gate('coverage.knownDistance', round(classA.coverage.ratio), '>=', M3D_PROXY_THRESHOLDS.minCoverage),
+  gate('coverage.trajectory', round(classB.coverage.ratio), '>=', M3D_PROXY_THRESHOLDS.minCoverage),
+  gate('coverage.adjacent', round(classC.coverage.ratio), '>=', M3D_PROXY_THRESHOLDS.minCoverage),
+  gate('spearman', classA.spearman, '>=', M3D_PROXY_THRESHOLDS.minSpearman),
+  gate('meanAbsoluteError', classA.meanAbsoluteError, '<=', M3D_PROXY_THRESHOLDS.maxMeanAbsoluteError),
+  gate('inversionRate', round(classA.order.inversionRate), '<=', M3D_PROXY_THRESHOLDS.maxInversionRate),
+  gate('directionAgreement', classA.directionAgreement, '>=', M3D_PROXY_THRESHOLDS.minDirectionAgreement),
+  gate('lipschitzViolationRate', round(classC.lipschitz.rate), '<=', M3D_PROXY_THRESHOLDS.maxLipschitzViolationRate),
 ];
 const verdict = gates.every((entry) => entry.passed) ? 'go' : 'no-go';
 
@@ -419,7 +419,7 @@ console.log(
   JSON.stringify(
     {
       milestone: 'M3d',
-      manifestFingerprint: M3D_FINGERPRINT,
+      manifestFingerprint: M3D_PROXY_FINGERPRINT,
       manifestHonoured: SCALE === 1,
       scale: SCALE,
       profile: DISTANCE_PROXY_PROFILE,

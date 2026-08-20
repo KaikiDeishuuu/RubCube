@@ -8,7 +8,12 @@ import {
 import { BENCH_SOLVER_NODE_BUDGET, TWO_PHASE_MAX_LENGTH } from '../solver/search.js';
 
 /**
- * The pre-registered M3d distance-proxy validation profile.
+ * The pre-registered M3d validation profiles, both rounds.
+ *
+ * Round one below validated the two-phase distance proxy and rejected it.
+ * Round two, further down, pre-registers the structural metric that replaced
+ * it. The first round's text is left byte-for-byte as it was hashed - a
+ * pre-registration that gets edited after its own result is not one.
  *
  * DESIGN.md section 9 asks for exactly one manifest: it fixes the corpora, the
  * seed, the whole solver profile, both fingerprints, the minimum coverage and
@@ -57,7 +62,7 @@ export const DISTANCE_PROXY_PROFILE = Object.freeze({
  *   10-to-21 band where the benchmark actually operates, and that is precisely
  *   the band no oracle can reach.
  */
-export const M3D_CORPUS = Object.freeze({
+export const M3D_PROXY_CORPUS = Object.freeze({
   seed: 0x4d_33_44_00,
   knownDistance: Object.freeze({ minLength: 1, maxLength: 9, perLength: 100 }),
   trajectory: Object.freeze({ tasks: 40, maxSteps: 30, slipRate: 0.25 }),
@@ -101,7 +106,7 @@ export const TRAJECTORY_SURROGATE = 'solver-guided-walk-with-slips-v1';
  *   twice the slack. A distance function moves by one per move; a proxy that
  *   jumped by more than one on a fifth of all moves would not be distance-like.
  */
-export const M3D_THRESHOLDS = Object.freeze({
+export const M3D_PROXY_THRESHOLDS = Object.freeze({
   minCoverage: 0.99,
   minSpearman: 0.9,
   maxMeanAbsoluteError: 1.5,
@@ -114,8 +119,8 @@ function hex(value: number): string {
   return `0x${value.toString(16)}`;
 }
 
-/** Canonical text hashed into M3D_FINGERPRINT. Keep byte-for-byte stable. */
-export const M3D_MANIFEST = [
+/** Canonical text hashed into M3D_PROXY_FINGERPRINT. Keep byte-for-byte stable. */
+export const M3D_PROXY_MANIFEST = [
   'rubcube-distance-proxy-m3d-v1',
   'proxy=two-phase-solution-length',
   `solver-profile=hardMax:${DISTANCE_PROXY_PROFILE.hardMax},targetLength:${DISTANCE_PROXY_PROFILE.targetLength},maxNodes:${DISTANCE_PROXY_PROFILE.maxNodes},budgetMs:none`,
@@ -125,19 +130,122 @@ export const M3D_MANIFEST = [
   `node-counting=${NODE_COUNTING_VERSION}`,
   `solver-fingerprint=${SOLVER_FINGERPRINT}`,
   `table-fingerprint=${TABLE_FINGERPRINT}`,
-  `corpus-seed=${hex(M3D_CORPUS.seed)}`,
-  `corpus-a=known-distance:lengths${M3D_CORPUS.knownDistance.minLength}-${M3D_CORPUS.knownDistance.maxLength},perLength${M3D_CORPUS.knownDistance.perLength},reference=bidirectional-optimal`,
-  `corpus-b=trajectory:tasks${M3D_CORPUS.trajectory.tasks},maxSteps${M3D_CORPUS.trajectory.maxSteps},slipRate${M3D_CORPUS.trajectory.slipRate},surrogate=${TRAJECTORY_SURROGATE}`,
-  `corpus-c=adjacent-pairs:bases=${M3D_CORPUS.adjacent.bases.map((base) => base ?? 'uniform').join('/')},perClass${M3D_CORPUS.adjacent.basesPerClass},movesPerBase${M3D_CORPUS.adjacent.movesPerBase}`,
-  `control=undirected-random-walk:walks${M3D_CORPUS.control.walks},steps${M3D_CORPUS.control.steps},from=solved`,
-  `gate-coverage>=${M3D_THRESHOLDS.minCoverage}`,
-  `gate-spearman>=${M3D_THRESHOLDS.minSpearman}`,
-  `gate-mae<=${M3D_THRESHOLDS.maxMeanAbsoluteError}`,
-  `gate-inversion<=${M3D_THRESHOLDS.maxInversionRate}`,
-  `gate-direction>=${M3D_THRESHOLDS.minDirectionAgreement}`,
-  `gate-lipschitz<=${M3D_THRESHOLDS.maxLipschitzViolationRate}`,
+  `corpus-seed=${hex(M3D_PROXY_CORPUS.seed)}`,
+  `corpus-a=known-distance:lengths${M3D_PROXY_CORPUS.knownDistance.minLength}-${M3D_PROXY_CORPUS.knownDistance.maxLength},perLength${M3D_PROXY_CORPUS.knownDistance.perLength},reference=bidirectional-optimal`,
+  `corpus-b=trajectory:tasks${M3D_PROXY_CORPUS.trajectory.tasks},maxSteps${M3D_PROXY_CORPUS.trajectory.maxSteps},slipRate${M3D_PROXY_CORPUS.trajectory.slipRate},surrogate=${TRAJECTORY_SURROGATE}`,
+  `corpus-c=adjacent-pairs:bases=${M3D_PROXY_CORPUS.adjacent.bases.map((base) => base ?? 'uniform').join('/')},perClass${M3D_PROXY_CORPUS.adjacent.basesPerClass},movesPerBase${M3D_PROXY_CORPUS.adjacent.movesPerBase}`,
+  `control=undirected-random-walk:walks${M3D_PROXY_CORPUS.control.walks},steps${M3D_PROXY_CORPUS.control.steps},from=solved`,
+  `gate-coverage>=${M3D_PROXY_THRESHOLDS.minCoverage}`,
+  `gate-spearman>=${M3D_PROXY_THRESHOLDS.minSpearman}`,
+  `gate-mae<=${M3D_PROXY_THRESHOLDS.maxMeanAbsoluteError}`,
+  `gate-inversion<=${M3D_PROXY_THRESHOLDS.maxInversionRate}`,
+  `gate-direction>=${M3D_PROXY_THRESHOLDS.minDirectionAgreement}`,
+  `gate-lipschitz<=${M3D_PROXY_THRESHOLDS.maxLipschitzViolationRate}`,
 ].join('\n');
 
-/** SHA-256 of M3D_MANIFEST. */
-export const M3D_FINGERPRINT =
+/** SHA-256 of M3D_PROXY_MANIFEST. */
+export const M3D_PROXY_FINGERPRINT =
   'sha256:0781cb57abf9e6189c4505acb63d1e099c8cd087373ecda12c513fab59061ad8';
+
+// ---------------------------------------------------------------------------
+// Round two: the structural metric that replaced the rejected proxy.
+// ---------------------------------------------------------------------------
+
+/**
+ * Structural levels: cubes with a known amount of the solve already done.
+ *
+ * Built by pinning a set of cubies home and randomising the rest under the
+ * validity constraints, so the structure is exact by construction rather than
+ * by having solved anything. The five names are the milestones a person would
+ * recognise, taken from the stage ladder in DESIGN-SOLVING.md section 3.2.
+ *
+ * This corpus exists because the replacement metric cannot be checked the way
+ * the proxy was. There is no oracle for "how much progress is this" - progress
+ * is what the metric *defines*. What can be checked is that the definition
+ * puts recognisable milestones in the right order, spreads them out, and says
+ * something sane about a cube nobody has touched.
+ */
+export const M3D_STRUCTURAL_LEVELS: readonly string[] = Object.freeze([
+  'scrambled',
+  'cross',
+  'first-layer',
+  'f2l',
+  'oriented',
+  'solved',
+]);
+
+export const M3D_STRUCTURAL_CORPUS = Object.freeze({
+  seed: 0x4d_33_44_10,
+  levels: M3D_STRUCTURAL_LEVELS,
+  perLevel: 200,
+  /** Large because it is checked against a closed-form prediction. */
+  randomStates: 5_000,
+  adjacent: Object.freeze({
+    bases: Object.freeze([null, 6, 10, 14] as const),
+    basesPerClass: 500,
+    movesPerBase: 5,
+  }),
+  /** Solver-bound, and reported rather than gated; see below. */
+  trajectory: Object.freeze({ tasks: 40, maxSteps: 30, slipRate: 0.25 }),
+  control: Object.freeze({ walks: 200, steps: 30 }),
+});
+
+/**
+ * What a uniform random cube should score, in closed form.
+ *
+ * A corner is home when it is both in its own slot and untwisted: `1/8 * 1/3`.
+ * An edge: `1/12 * 1/2`. So the expectation is `8/24 + 12/24 = 20/24`, and a
+ * measured mean that misses it says either the metric or the sampler is wrong.
+ * This is the one round-two gate that tests a prediction rather than a
+ * definition, which is why the sample behind it is the largest.
+ */
+export const RANDOM_STATE_PLACED_MEAN = 20 / 24;
+
+/**
+ * Round-two thresholds.
+ *
+ * These are a different kind of claim from round one's, and the manifest says
+ * so rather than dressing one up as the other. The proxy's question was
+ * empirical - does solution length track distance - and it could have gone
+ * either way. Most of the structural metric's behaviour follows from its
+ * definition, so three of these gates are regression guards that fail only if
+ * something is broken. Two carry real risk:
+ *
+ * - `randomStateTolerance` tests the closed-form prediction above.
+ * - `mustBeatProxy` requires the replacement to order the structural levels
+ *   better than the metric it replaced, measured on the same corpus in the
+ *   same run. That is the whole point of the exercise: round one died of
+ *   saturation, and a replacement that saturates too would be no better.
+ */
+export const M3D_STRUCTURAL_THRESHOLDS = Object.freeze({
+  minLevelSpearman: 0.9,
+  randomStateTolerance: 0.15,
+  /** A face turn cycles four corners and four edges; a half turn swaps two of each. */
+  maxCubiesPerMove: 8,
+  mustBeatProxy: true,
+});
+
+/** Canonical text hashed into M3D_STRUCTURAL_FINGERPRINT. Keep byte-for-byte stable. */
+export const M3D_STRUCTURAL_MANIFEST = [
+  'rubcube-progress-metric-m3d-v2',
+  'metric=structural-cubies-v1',
+  'replaces=two-phase-solution-length;reason=saturation;round1=' + M3D_PROXY_FINGERPRINT,
+  'cubie-correct=position+orientation;scored-cubies=20;centres=must-be-home',
+  'score=(placed(final)-placed(initial))/(20-placed(initial));clip=[0,1];null-when-initial-solved',
+  `corpus-seed=${hex(M3D_STRUCTURAL_CORPUS.seed)}`,
+  `corpus-s=structural-levels:${M3D_STRUCTURAL_LEVELS.join('/')},perLevel${M3D_STRUCTURAL_CORPUS.perLevel}`,
+  `corpus-r=uniform-random:${M3D_STRUCTURAL_CORPUS.randomStates}`,
+  `corpus-n=adjacent-pairs:bases=${M3D_STRUCTURAL_CORPUS.adjacent.bases.map((base) => base ?? 'uniform').join('/')},perClass${M3D_STRUCTURAL_CORPUS.adjacent.basesPerClass},movesPerBase${M3D_STRUCTURAL_CORPUS.adjacent.movesPerBase}`,
+  `corpus-t=trajectory:tasks${M3D_STRUCTURAL_CORPUS.trajectory.tasks},maxSteps${M3D_STRUCTURAL_CORPUS.trajectory.maxSteps},slipRate${M3D_STRUCTURAL_CORPUS.trajectory.slipRate},surrogate=${TRAJECTORY_SURROGATE},reported-not-gated`,
+  `control=undirected-random-walk:walks${M3D_STRUCTURAL_CORPUS.control.walks},steps${M3D_STRUCTURAL_CORPUS.control.steps},from=solved,reported-not-gated`,
+  'gate-exact-solved=score-1-iff-solved:0-exceptions',
+  'gate-level-monotone=strictly-increasing-mean-placed',
+  `gate-level-spearman>=${M3D_STRUCTURAL_THRESHOLDS.minLevelSpearman}`,
+  `gate-random-mean=20/24+-${M3D_STRUCTURAL_THRESHOLDS.randomStateTolerance}`,
+  `gate-move-bound=|delta-placed|<=${M3D_STRUCTURAL_THRESHOLDS.maxCubiesPerMove}:0-violations`,
+  'gate-beats-proxy=structural-level-spearman>proxy-level-spearman',
+].join('\n');
+
+/** SHA-256 of M3D_STRUCTURAL_MANIFEST. */
+export const M3D_STRUCTURAL_FINGERPRINT =
+  'sha256:1f2639b4bb60e2844b1759402ba37f9081f3403956769e7f582b4caabc784cb4';

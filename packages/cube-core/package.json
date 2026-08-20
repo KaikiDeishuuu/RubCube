@@ -37,6 +37,7 @@
     "coverage": "vitest run --coverage",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json",
+    "validate:progress": "tsc -p tsconfig.build.json && node scripts/validate-progress-metric.mjs",
     "validate:proxy": "tsc -p tsconfig.build.json && node scripts/validate-distance-proxy.mjs",
     "verify:corpus": "tsc -p tsconfig.build.json && node scripts/verify-solver-corpus.mjs",
     "verify:optimal": "tsc -p tsconfig.build.json && node scripts/verify-optimal-corpus.mjs"

@@ -31,9 +31,14 @@ M2.5 的历史与回放运行路径也已经接通：
 - **M3b** —— 两阶段搜索、可暂停内核、Worker、IndexedDB 表缓存和游戏内「Solve」按钮都已接通。10,000 个均匀随机状态全部求解成功，纯求解 P50 28.5 ms / P99 280 ms。唯一未达标的验收项是解长度中位数（21，标准是 ≤ 20）。
 - **M3c** —— `@rubcube/cube-core/optimal` 用中间相遇搜索给出 k≤9 的**真最优解**，供 benchmark 的 `optimality_ratio` 当分母。它是 Node/bench 专用的：生产构建会遍历 Rollup 模块图，把它挡在浏览器包外面。
 
-- **M3d** —— `@rubcube/cube-core/metrics` 提供 §6.5 的进度分实现和一份**预注册**的验证 profile（语料、seed、solver profile 与 go/no-go 阈值一起散列成 `M3D_FINGERPRINT`，事后调门槛会改掉指纹）。跑完的结论是 **no-go**：Kociemba 解长度在 10–21 步区间饱和——14 步打乱和均匀随机状态的代理中位数都是 21——逆序率与局部一致性两条门槛不过，所以 `progress_score` 未启用。详见 DESIGN-SOLVING.md「M3d 实测」。
+- **M3d** —— `@rubcube/cube-core/metrics` 提供 §6.5 的进度分，以及两份**预注册**验证 profile（语料、seed、solver profile 与 go/no-go 阈值一起散列成 fingerprint，事后调门槛会改掉指纹）。跑了两轮：
 
-尚未实现的是 M3.5 的分层教学；`progress_score` 换成什么实现也还没定（DESIGN.md §9 待决 1）。
+  - **第一轮否决**了「Kociemba 解长度当距离」。它在 10–21 步区间饱和——整整一个第一层做完，解长只从 20.68 走到 20.25，折算成进度分约 0.02。
+  - **第二轮通过**了替代实现 `structural-cubies-v1`：`progress_score` 改成「位置与朝向都正确的块数占剩余工作的比例」。同一批状态上，底面十字 / 第一层 / 前两层 / 顶面定向分别是 0.24 / 0.44 / 0.64 / 0.70，层级 Spearman ρ 0.9765（旧代理 0.8254），每次打分 0.0006 ms 且不需要表。
+
+  被否决的那一版连同它的脚本一起留在仓库里——没有它，「新的这版好在哪」就只是一句断言。详见 DESIGN-SOLVING.md 的两节「M3d 实测」。
+
+尚未实现的是 M3.5 的分层教学。
 
 ## 开发
 
@@ -61,7 +66,11 @@ corepack pnpm --filter @rubcube/cube-core verify:corpus
 corepack pnpm --filter @rubcube/cube-core verify:optimal
 ```
 
-距离代理的验证 profile（判定为 no-go 时退出码为 1，那是实验给出的答案，不是脚本出错）：
+两份指标验证 profile（判定为 no-go 时退出码为 1，那是实验给出的答案，不是脚本出错）：
+
+```sh
+corepack pnpm --filter @rubcube/cube-core validate:progress
+```
 
 ```sh
 corepack pnpm --filter @rubcube/cube-core validate:proxy

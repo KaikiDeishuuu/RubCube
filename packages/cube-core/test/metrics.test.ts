@@ -2,9 +2,13 @@ import { beforeAll, describe, expect, it } from 'vitest';
 
 import * as rootApi from '../src/index.js';
 import {
+  ALL_HTM_MOVES,
   applyMoves,
   createSolvedState,
   generateRandomMoves,
+  generateRandomState,
+  isSolved,
+  mulberry32,
   type CubeState,
   type FaceMove,
 } from '../src/index.js';
@@ -13,10 +17,22 @@ import { SOLVER_FINGERPRINT, TABLE_FINGERPRINT } from '../src/solver/constants.j
 import { BENCH_SOLVER_NODE_BUDGET, type SolveResult } from '../src/solver/search.js';
 import {
   DISTANCE_PROXY_PROFILE,
-  M3D_CORPUS,
-  M3D_FINGERPRINT,
-  M3D_MANIFEST,
-  M3D_THRESHOLDS,
+  M3D_STRUCTURAL_CORPUS,
+  M3D_STRUCTURAL_FINGERPRINT,
+  M3D_STRUCTURAL_LEVELS,
+  M3D_STRUCTURAL_MANIFEST,
+  M3D_STRUCTURAL_THRESHOLDS,
+  MAX_CUBIES_PER_MOVE,
+  PROGRESS_METRIC_VERSION,
+  RANDOM_STATE_PLACED_MEAN,
+  SOLVED_CUBIE_COUNT,
+  cubieCorrectness,
+  placedCubies,
+  structuralProgress,
+  M3D_PROXY_CORPUS,
+  M3D_PROXY_FINGERPRINT,
+  M3D_PROXY_MANIFEST,
+  M3D_PROXY_THRESHOLDS,
   agreementRate,
   bestProgress,
   compareOrder,
@@ -27,7 +43,7 @@ import {
   meanSignedError,
   measureProxy,
   optimalityRatio,
-  progressScore,
+  proxyProgressScore,
   readProxy,
   spearmanRho,
   type ProxyReading,
@@ -69,16 +85,18 @@ describe('metrics package boundary', () => {
   it('does not leak the judge\'s metrics through the root barrel', () => {
     // Track B hands its tools to the model being measured; a progress score
     // reachable from the default entry point is a solver hint in disguise.
-    expect(rootApi).not.toHaveProperty('progressScore');
+    expect(rootApi).not.toHaveProperty('proxyProgressScore');
+    expect(rootApi).not.toHaveProperty('structuralProgress');
+    expect(rootApi).not.toHaveProperty('placedCubies');
     expect(rootApi).not.toHaveProperty('measureProxy');
     expect(rootApi).not.toHaveProperty('DISTANCE_PROXY_PROFILE');
-    expect(rootApi).not.toHaveProperty('M3D_FINGERPRINT');
+    expect(rootApi).not.toHaveProperty('M3D_PROXY_FINGERPRINT');
   });
 });
 
 describe('the pre-registered M3d manifest', () => {
   it('keeps its fingerprint equal to the SHA-256 of its canonical text', async () => {
-    expect(M3D_FINGERPRINT).toBe(await sha256(M3D_MANIFEST));
+    expect(M3D_PROXY_FINGERPRINT).toBe(await sha256(M3D_PROXY_MANIFEST));
   });
 
   it('scores under a profile with no wall clock in it', () => {
@@ -92,22 +110,22 @@ describe('the pre-registered M3d manifest', () => {
   it('pins the search it validated, not just the corpus', () => {
     // A proxy measured under one search says nothing about another, so both
     // fingerprints have to travel inside the hashed text.
-    expect(M3D_MANIFEST).toContain(`solver-fingerprint=${SOLVER_FINGERPRINT}`);
-    expect(M3D_MANIFEST).toContain(`table-fingerprint=${TABLE_FINGERPRINT}`);
-    expect(M3D_MANIFEST).toContain('budgetMs:none');
-    expect(M3D_MANIFEST).toContain(`corpus-seed=0x${M3D_CORPUS.seed.toString(16)}`);
+    expect(M3D_PROXY_MANIFEST).toContain(`solver-fingerprint=${SOLVER_FINGERPRINT}`);
+    expect(M3D_PROXY_MANIFEST).toContain(`table-fingerprint=${TABLE_FINGERPRINT}`);
+    expect(M3D_PROXY_MANIFEST).toContain('budgetMs:none');
+    expect(M3D_PROXY_MANIFEST).toContain(`corpus-seed=0x${M3D_PROXY_CORPUS.seed.toString(16)}`);
   });
 
   it('states every go/no-go threshold in the hashed text', () => {
     // A threshold that lived only in code could be edited after a run without
     // the fingerprint noticing, which is the one thing pre-registration is for.
-    expect(M3D_MANIFEST).toContain(`gate-coverage>=${M3D_THRESHOLDS.minCoverage}`);
-    expect(M3D_MANIFEST).toContain(`gate-spearman>=${M3D_THRESHOLDS.minSpearman}`);
-    expect(M3D_MANIFEST).toContain(`gate-mae<=${M3D_THRESHOLDS.maxMeanAbsoluteError}`);
-    expect(M3D_MANIFEST).toContain(`gate-inversion<=${M3D_THRESHOLDS.maxInversionRate}`);
-    expect(M3D_MANIFEST).toContain(`gate-direction>=${M3D_THRESHOLDS.minDirectionAgreement}`);
-    expect(M3D_MANIFEST).toContain(
-      `gate-lipschitz<=${M3D_THRESHOLDS.maxLipschitzViolationRate}`,
+    expect(M3D_PROXY_MANIFEST).toContain(`gate-coverage>=${M3D_PROXY_THRESHOLDS.minCoverage}`);
+    expect(M3D_PROXY_MANIFEST).toContain(`gate-spearman>=${M3D_PROXY_THRESHOLDS.minSpearman}`);
+    expect(M3D_PROXY_MANIFEST).toContain(`gate-mae<=${M3D_PROXY_THRESHOLDS.maxMeanAbsoluteError}`);
+    expect(M3D_PROXY_MANIFEST).toContain(`gate-inversion<=${M3D_PROXY_THRESHOLDS.maxInversionRate}`);
+    expect(M3D_PROXY_MANIFEST).toContain(`gate-direction>=${M3D_PROXY_THRESHOLDS.minDirectionAgreement}`);
+    expect(M3D_PROXY_MANIFEST).toContain(
+      `gate-lipschitz<=${M3D_PROXY_THRESHOLDS.maxLipschitzViolationRate}`,
     );
   });
 });
@@ -202,13 +220,13 @@ describe('measured against a real search', () => {
 
 describe('progress score', () => {
   it('is the fraction of the baseline distance removed', () => {
-    expect(progressScore(reading(20), reading(5))).toBeCloseTo(0.75, 10);
-    expect(progressScore(reading(21), reading(0))).toBe(1);
-    expect(progressScore(reading(18), reading(18))).toBe(0);
+    expect(proxyProgressScore(reading(20), reading(5))).toBeCloseTo(0.75, 10);
+    expect(proxyProgressScore(reading(21), reading(0))).toBe(1);
+    expect(proxyProgressScore(reading(18), reading(18))).toBe(0);
   });
 
   it('clips a cube the model made worse to zero rather than going negative', () => {
-    expect(progressScore(reading(10), reading(25))).toBe(0);
+    expect(proxyProgressScore(reading(10), reading(25))).toBe(0);
   });
 
   it.each([
@@ -218,37 +236,37 @@ describe('progress score', () => {
   ])('is null when the proxy is missing at %s', (_label, initial, final) => {
     // A dropped sample has to stay dropped: substituting zero would read as a
     // model that made no progress, which is a score, not a gap.
-    expect(progressScore(initial, final)).toBeNull();
+    expect(proxyProgressScore(initial, final)).toBeNull();
   });
 
   it('is undefined for a task that started solved', () => {
-    expect(progressScore(reading(0), reading(0))).toBeNull();
+    expect(proxyProgressScore(reading(0), reading(0))).toBeNull();
   });
 });
 
 describe('best progress', () => {
   it('finds the high-water mark and the coverage behind it', () => {
-    const best = bestProgress(reading(20), [reading(20), reading(5), reading(null), reading(15)]);
+    const best = bestProgress([0, 0.75, null, 0.25]);
     expect(best.value).toBeCloseTo(0.75, 10);
     expect(best.validPoints).toBe(3);
     expect(best.eligiblePoints).toBe(4);
   });
 
   it('separates came-close-and-lost-it from never-got-anywhere', () => {
-    const lost = bestProgress(reading(20), [reading(4), reading(20)]);
-    expect(lost.value).toBeCloseTo(0.8, 10);
-    expect(progressScore(reading(20), reading(20))).toBe(0);
+    // Same endpoint, different histories: one touched 0.8 on the way.
+    expect(bestProgress([0.8, 0]).value).toBeCloseTo(0.8, 10);
+    expect(bestProgress([0, 0]).value).toBe(0);
   });
 
   it('is null with no scored point, and says how many it looked at', () => {
-    const none = bestProgress(reading(null), [reading(4), reading(9)]);
+    const none = bestProgress([null, null]);
     expect(none.value).toBeNull();
     expect(none.validPoints).toBe(0);
     expect(none.eligiblePoints).toBe(2);
   });
 
   it('reports an empty trajectory as null rather than zero', () => {
-    expect(bestProgress(reading(20), [])).toEqual({
+    expect(bestProgress([])).toEqual({
       value: null,
       validPoints: 0,
       eligiblePoints: 0,
@@ -388,5 +406,153 @@ describe('agreement rate', () => {
   it('is the fraction that agreed', () => {
     expect(agreementRate([true, true, false, true])).toBe(0.75);
     expect(agreementRate([])).toBeNull();
+  });
+});
+
+describe('the pre-registered round-two manifest', () => {
+  it('keeps its fingerprint equal to the SHA-256 of its canonical text', async () => {
+    expect(M3D_STRUCTURAL_FINGERPRINT).toBe(await sha256(M3D_STRUCTURAL_MANIFEST));
+  });
+
+  it('records which pre-registration it replaces, by fingerprint', () => {
+    // A metric version that cannot name the one it superseded loses the reason
+    // it exists the first time someone reads only the newer file.
+    expect(M3D_STRUCTURAL_MANIFEST).toContain(`round1=${M3D_PROXY_FINGERPRINT}`);
+    expect(M3D_STRUCTURAL_MANIFEST).toContain(`metric=${PROGRESS_METRIC_VERSION}`);
+  });
+
+  it('states its gates and the level ladder in the hashed text', () => {
+    expect(M3D_STRUCTURAL_MANIFEST).toContain(
+      `gate-level-spearman>=${M3D_STRUCTURAL_THRESHOLDS.minLevelSpearman}`,
+    );
+    expect(M3D_STRUCTURAL_MANIFEST).toContain(
+      `gate-random-mean=20/24+-${M3D_STRUCTURAL_THRESHOLDS.randomStateTolerance}`,
+    );
+    expect(M3D_STRUCTURAL_MANIFEST).toContain(
+      `gate-move-bound=|delta-placed|<=${MAX_CUBIES_PER_MOVE}:0-violations`,
+    );
+    expect(M3D_STRUCTURAL_MANIFEST).toContain('gate-beats-proxy');
+    expect(M3D_STRUCTURAL_MANIFEST).toContain(M3D_STRUCTURAL_LEVELS.join('/'));
+  });
+
+  it('declares the trajectory class as reported rather than gated', () => {
+    // It walks a Kociemba solution, along which this metric reads zero until
+    // the end. Declaring that up front is what keeps it from being quietly
+    // dropped once the run shows it.
+    expect(M3D_STRUCTURAL_MANIFEST).toContain('reported-not-gated');
+    expect(M3D_STRUCTURAL_CORPUS.trajectory.slipRate).toBe(0.25);
+  });
+});
+
+describe('solved cubies', () => {
+  it('counts all twenty on a solved cube and none of the centres', () => {
+    expect(SOLVED_CUBIE_COUNT).toBe(20);
+    expect(placedCubies(createSolvedState())).toBe(20);
+  });
+
+  it.each(['U', 'R', 'F', 'U2', "R'"])('loses exactly eight cubies to a %s turn', (move) => {
+    // A quarter turn cycles four corners and four edges; a half turn swaps two
+    // pairs of each. Either way eight cubies leave home and twelve stay.
+    const state = applyMoves(createSolvedState(), move);
+    expect(placedCubies(state)).toBe(12);
+  });
+
+  it('separates being in the right slot from being the right way up', () => {
+    // U moves four corners and four edges without twisting or flipping
+    // anything, so every orientation still matches while eight positions do
+    // not. A count that could not tell those apart would report 20 here.
+    const turned = applyMoves(createSolvedState(), 'U');
+    expect(cubieCorrectness(turned)).toEqual({ placed: 12, positioned: 12, oriented: 20 });
+  });
+
+  it('compares against any reference, not only the solved state', () => {
+    // T1 scores a predicted cube against the true one, where the reference is
+    // whatever the task landed on.
+    const state = applyMoves(createSolvedState(), "R U R'");
+    expect(cubieCorrectness(state, state)).toEqual({
+      placed: 20,
+      positioned: 20,
+      oriented: 20,
+    });
+    expect(cubieCorrectness(state, createSolvedState()).placed).toBe(
+      cubieCorrectness(createSolvedState(), state).placed,
+    );
+  });
+
+  it('refuses a cube that has been turned as a whole', () => {
+    // isSolved is centre-relative and would call this solved; counting cubies
+    // against the canonical solved state would call it untouched. Neither
+    // answer is wrong, which is why the disagreement has to be refused rather
+    // than resolved. "U E' D'" is the y rotation.
+    const rotated = applyMoves(createSolvedState(), "U E' D'");
+    expect(isSolved(rotated)).toBe(true);
+    expect(() => placedCubies(rotated)).toThrow(RangeError);
+  });
+
+  it('never moves more than eight cubies for one turn', () => {
+    const state = applyMoves(createSolvedState(), generateRandomMoves(12, 0x4d3346));
+    const before = placedCubies(state);
+    for (const move of ALL_HTM_MOVES) {
+      const delta = Math.abs(placedCubies(applyMoves(state, [move])) - before);
+      expect(delta).toBeLessThanOrEqual(MAX_CUBIES_PER_MOVE);
+    }
+  });
+
+  it('sits near 20/24 on a uniform random cube', () => {
+    // The closed form the round-two prediction gate checks: a corner is home
+    // with probability 1/24 and so is an edge, over eight and twelve of them.
+    const random = mulberry32(0x4d3347);
+    let total = 0;
+    const samples = 2_000;
+    for (let index = 0; index < samples; index += 1) {
+      total += placedCubies(generateRandomState(random));
+    }
+    expect(RANDOM_STATE_PLACED_MEAN).toBeCloseTo(0.8333, 4);
+    expect(total / samples).toBeCloseTo(RANDOM_STATE_PLACED_MEAN, 1);
+  });
+});
+
+describe('structural progress', () => {
+  const scrambled = applyMoves(createSolvedState(), generateRandomMoves(20, 0x4d3348));
+
+  it('is one exactly when the cube ends solved', () => {
+    expect(structuralProgress(scrambled, createSolvedState())).toBe(1);
+  });
+
+  it('is zero for a cube left where it started', () => {
+    expect(structuralProgress(scrambled, scrambled)).toBe(0);
+  });
+
+  it('clips a model that made things worse rather than going negative', () => {
+    const better = applyMoves(createSolvedState(), 'R');
+    const worse = applyMoves(createSolvedState(), generateRandomMoves(20, 0x4d3349));
+    expect(structuralProgress(better, worse)).toBe(0);
+  });
+
+  it('is the fraction of the remaining cubies that got fixed', () => {
+    // R leaves twelve home, so eight are outstanding; undoing it fixes all of
+    // them, and undoing half the damage would score half.
+    const start = applyMoves(createSolvedState(), 'R');
+    expect(placedCubies(start)).toBe(12);
+    expect(structuralProgress(start, createSolvedState())).toBe(1);
+    expect(structuralProgress(start, start)).toBe(0);
+  });
+
+  it('is undefined for a task that started solved', () => {
+    // Nothing to do a fraction of, exactly as with the rejected proxy.
+    expect(structuralProgress(createSolvedState(), createSolvedState())).toBeNull();
+  });
+
+  it('refuses a rotated cube on either side', () => {
+    const rotated = applyMoves(createSolvedState(), "U E' D'");
+    expect(() => structuralProgress(rotated, createSolvedState())).toThrow(RangeError);
+    expect(() => structuralProgress(scrambled, rotated)).toThrow(RangeError);
+  });
+
+  it('needs no solver and no tables', () => {
+    // The whole reason it can be read at every trajectory point: the rejected
+    // proxy cost about 28 ms a state, this is a loop over forty bytes.
+    expect(PROGRESS_METRIC_VERSION).toBe('structural-cubies-v1');
+    expect(M3D_STRUCTURAL_LEVELS).toHaveLength(6);
   });
 });
