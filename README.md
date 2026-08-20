@@ -25,13 +25,15 @@ M2.5 的历史与回放运行路径也已经接通：
 - app 使用 `baseState + entries` 原子维护已提交历史，界面已提供 Undo、完整倒带和取消播放；Reset/打乱也经过同一 dispatcher
 - WebGL 上下文丢失时从最后一个已提交整数状态切换到 fallback，不读取动画中的浮点瞬时状态
 
-求解器已经落地到 M3c：
+求解器已经落地到 M3d：
 
 - **M3a** —— `@rubcube/cube-core/solver` 提供六种 Kociemba 坐标、6 张移动表、4 张 nibble 剪枝表、版本化二进制 artifact 和注入式缓存加载。四张表的 9/9/14/12 直径由穷举测试固定。桌面浏览器冷路径已实测（冷生成 P95 726 ms），**方案 B（首次在 Worker 生成、存 IndexedDB）已选定**；移动设备仍未测。
 - **M3b** —— 两阶段搜索、可暂停内核、Worker、IndexedDB 表缓存和游戏内「Solve」按钮都已接通。10,000 个均匀随机状态全部求解成功，纯求解 P50 28.5 ms / P99 280 ms。唯一未达标的验收项是解长度中位数（21，标准是 ≤ 20）。
 - **M3c** —— `@rubcube/cube-core/optimal` 用中间相遇搜索给出 k≤9 的**真最优解**，供 benchmark 的 `optimality_ratio` 当分母。它是 Node/bench 专用的：生产构建会遍历 Rollup 模块图，把它挡在浏览器包外面。
 
-尚未实现的是 M3d 的距离代理验证和 M3.5 的分层教学。
+- **M3d** —— `@rubcube/cube-core/metrics` 提供 §6.5 的进度分实现和一份**预注册**的验证 profile（语料、seed、solver profile 与 go/no-go 阈值一起散列成 `M3D_FINGERPRINT`，事后调门槛会改掉指纹）。跑完的结论是 **no-go**：Kociemba 解长度在 10–21 步区间饱和——14 步打乱和均匀随机状态的代理中位数都是 21——逆序率与局部一致性两条门槛不过，所以 `progress_score` 未启用。详见 DESIGN-SOLVING.md「M3d 实测」。
+
+尚未实现的是 M3.5 的分层教学；`progress_score` 换成什么实现也还没定（DESIGN.md §9 待决 1）。
 
 ## 开发
 
@@ -57,6 +59,12 @@ corepack pnpm --filter @rubcube/cube-core verify:corpus
 
 ```sh
 corepack pnpm --filter @rubcube/cube-core verify:optimal
+```
+
+距离代理的验证 profile（判定为 no-go 时退出码为 1，那是实验给出的答案，不是脚本出错）：
+
+```sh
+corepack pnpm --filter @rubcube/cube-core validate:proxy
 ```
 
 `bench:tables` 输出的 [`solver-tables-node-wsl2-2026-08-17.json`](packages/cube-core/benchmarks/solver-tables-node-wsl2-2026-08-17.json) 只是单机 Node 冷进程基线，不是方案 A/B 的跨端决策报告——那份决策证据来自浏览器实测，见 DESIGN-SOLVING.md §2.6。`verify:corpus` 跑 M3b 的 10,000 个均匀随机状态，`verify:optimal` 跑 M3c 的球层数量断言与 k=1..9 语料。

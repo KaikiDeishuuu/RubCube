@@ -69,13 +69,18 @@ packages/
         policy.ts     # 策略表解码、ranking 与 lookup
         generated-policy.ts # 构建期生成的 packed policy + fingerprint；不手改
         next-step.ts  # 纯领域 TutorialStep；不依赖渲染层 ID
-      metrics.ts      # 距离启发式、阶段完成度、进度分
+      metrics/
+        index.ts      # 独立 /metrics package subpath；只给裁判使用
+        proxy.ts      # §6.5 的 proxyLen / progress_score / 两个 ratio 与 coverage
+        statistics.ts # Spearman ρ、MAE、逆序、Lipschitz 违规率
+        manifest.ts   # M3d 预注册 profile、语料、阈值与 fingerprint
       rng.ts          # mulberry32 种子随机
     scripts/
       benchmark-solver-tables.mjs # M3a：Node 冷生成/编解码/压缩基准
       benchmark-solver-search.mjs # M3b：解长度/耗时 profile 对比
       verify-solver-corpus.mjs    # M3b：10,000 均匀随机状态验收语料
       verify-optimal-corpus.mjs   # M3c：k=1..9 最优解语料与球层数量断言
+      validate-distance-proxy.mjs # M3d：距离代理验证 profile 与 go/no-go 判定
       generate-tutorial-policy.ts # M3.5：Node 构建工具；不进入运行时 package exports
   cube-render/        # Three.js 渲染 + 动画 + 交互
   app/                # React 游戏界面、历史、计时器、统计、教程与 solver Worker
@@ -90,7 +95,7 @@ packages/
 
 **硬性约束：`cube-core/src` 不得 import 任何渲染或 Node 专属 API。** 这是整个设计的基石。默认入口只导出 state/moves/facelet/rng，以及不依赖求解器的随机状态/随机步采样；`/solver`、`/optimal`、`/metrics`、`/tutorial` 都是独立 package subpath，根入口不得重新导出。WCA-style 的“随机状态 → 求解 → 逆序”由 app 的 solver Worker 编排，不能放进默认入口的 `scramble.ts` 形成 `root → solver` 的间接依赖。浏览器 app 不得静态依赖 Node-only 的 `/optimal`；教程用领域 `CubieRef`/`SlotRef`，由 app 映射到 `cube-render` 的视觉 ID。`cube-core/scripts` 是可使用 Node 的构建工具，但不属于运行时源码，也不进入 exports。
 
-截至 2026-08-20，`/solver`（M3a 表层 + M3b 搜索）与 `/optimal`（M3c）已经落地；`/metrics` 和 `/tutorial` 仍属于后续里程碑。生产 app 的主 bundle 必须继续保持不含 `/solver` 与 `/optimal`：`/solver` 只出现在 solver worker chunk 里，`/optimal` 一个 chunk 都不许出现，后者由 `packages/app/build/forbid-node-only-modules.ts` 在生产构建中遍历 Rollup 模块图断言。
+截至 2026-08-20，`/solver`（M3a 表层 + M3b 搜索）、`/optimal`（M3c）与 `/metrics`（M3d）都已落地；`/tutorial` 仍属于后续里程碑。`/metrics` 落地不等于 `progress_score` 启用——M3d 的判定是否决，见 §6.5。生产 app 的主 bundle 必须继续保持不含 `/solver` 与 `/optimal`：`/solver` 只出现在 solver worker chunk 里，`/optimal` 一个 chunk 都不许出现，后者由 `packages/app/build/forbid-node-only-modules.ts` 在生产构建中遍历 Rollup 模块图断言。
 
 ---
 
@@ -590,11 +595,11 @@ get_state() -> { state: string; solved: boolean }
 | 指标 | 定义 | 说明 |
 |---|---|---|
 | `solve_rate@budget` | 预算内复原比例 | 主指标，但不够 |
-| **`progress_score`** | `1 - proxyLen(s_final) / proxyLen(s_0)`，clip 到 [0,1] | **核心细粒度指标**：用固定 profile 的 Kociemba 解长代理衡量“离复原还有多远” |
-| `best_progress` | 轨迹中非 null `progress_score` 的最大值；没有有效点则为 null | 区分“接近过又走丢了”和“一直没进展”；同时报告 trajectory coverage |
+| ~~**`progress_score`**~~ | `1 - proxyLen(s_final) / proxyLen(s_0)`，clip 到 [0,1] | **M3d 已否决这个实现，未启用**：Kociemba 解长代理在 10–21 步区间饱和，见下 |
+| ~~`best_progress`~~ | 轨迹中非 null `progress_score` 的最大值；没有有效点则为 null | 区分“接近过又走丢了”和“一直没进展”；同时报告 trajectory coverage。**依赖 `progress_score`，随它一起挂起** |
 | `htm_count` | 复原用的实际步数 | 效率 |
 | `optimality_ratio` | `htm_count / optimal_len`（仅 k≤9） | 真最优效率，值 ≥ 1，越低越好 |
-| `kociemba_ratio` | `htm_count / kociemba_baseline_len`（k>9） | 相对非最优基线的效率；可能 < 1，不能称为最优率 |
+| ~~`kociemba_ratio`~~ | `htm_count / kociemba_baseline_len`（k>9） | 相对非最优基线的效率；可能 < 1，不能称为最优率。**分母就是被否决的代理，随之挂起** |
 | `invalid_move_rate` | 非法 token / 总 token | 记号掌握度 |
 | `state_hallucination_rate` | 赛道 B：预期状态 ≠ 实际状态的比例 | 世界模型保真度 |
 | `sticker_accuracy` | T1：48 个可动贴纸逐格正确率 | 六个固定中心另报 sanity check，不能拿必然不动的 6 格抬高主分 |
@@ -605,6 +610,8 @@ get_state() -> { state: string; solved: boolean }
 | `repeatability` | 同一任务重复 n≥3 次后的成功率、标准差与置信区间 | 见 §7.4；不要把重复性统计误叫成标准 `pass@k` |
 
 **`progress_score` 的实现要点**：用 Kociemba 两阶段求解器的解长度作为距离代理。`proxyLen(s)` 在 `solved` 时取 `moves.length`，在 `budget-exhausted` 且 `best !== null` 时取 `best.length`；首解前耗尽、`no-solution-within-hard-max`、取消或错误时为 `null`。初始或最终任一侧为 `null` 时，该样本的 `progress_score` 也为 `null`，trace 必须记录两侧 solver status/节点数，聚合报告必须同时给出 coverage，不能静默丢样本、补 0 或临时混入另一尺度的 PDB 值。`best_progress` 只在非 null 轨迹点中取最大，并同时报告 `valid_points / eligible_points`；没有有效点时为 null。`kociemba_ratio` 的 baseline 复用 `proxyLen(s_0)`，缺失或为 0 时 ratio 为 null；`optimality_ratio` 的真最优分母缺失或为 0 时同样为 null。两个 ratio 都单独报告 coverage。正式报告的最低 coverage 写进 M3d manifest。这个代理不是真最优，能否足够稳定必须由 M3d 的实验决定，不能在实现前当作既定事实。剪枝表约 1.92 MiB，加移动表常驻约 3.62 MiB。k≤9 的短打乱用双向搜索求真最优作校准。
+
+**M3d 的实验已经做完，判定是否决。** 预注册 manifest（`cube-core/src/metrics/manifest.ts`，`sha256:0781cb57…`）的八条门槛过六条，两条不过：逆序率 0.0591（标准 ≤ 0.05）、Lipschitz 违规率 0.1583（标准 ≤ 0.10）。原因有两条，都可以直接从数据读出：搜索在找到第一条 ≤ `targetLength` 的解时就返回，对接近复原的魔方常常给出远长于最优解的答案（真距离 9 时平均高估 3.68 步，最坏 12 步）；而在远端代理直接饱和——**14 步打乱与均匀随机状态的代理中位数都是 21，分不开**。因此 `progress_score`、`best_progress`、`kociemba_ratio` 三个指标一律**未启用**，正式报告不得使用；`optimality_ratio` 不受影响，它的分母是 M3c 的真最优，不经过这个代理。上面这一整段的 null / coverage 语义本身是成立的，M3d 实测里三类语料 coverage 都是 100%，没有静默丢样本；被否决的是「用 Kociemba 解长当距离」这件事，不是这套记账规则。替换实现见 §9 待决 1，完整数据见 DESIGN-SOLVING.md「M3d 实测」。
 
 游戏内自动复原可以使用墙钟 deadline；**benchmark 判分不得使用墙钟 anytime 结果**，否则同一状态会因 CPU、负载和 JIT 状态得到不同距离。评测档必须固定 `hardMax`、`targetLength`、`maxNodes`、canonical move order、节点计数规则版本、表版本和 solver fingerprint；同一 solver profile 对同一状态必须返回逐步一致的解长。`progress_score` 只在初始代理距离大于 0 的任务上定义。
 
@@ -895,12 +902,12 @@ Opus 5 / Sonnet 5 支持长边 2576px 的高分辨率输入（单图最多约 47
 | **M3a** | 坐标、移动表、剪枝表、版本化 artifact/cache 契约与冷启动实测 | 决定 Worker 生成缓存还是打包二进制资产 |
 | **M3b** | Kociemba 两阶段搜索、确定性评测 profile 与 Worker 客户端 | 游戏内自动复原；可重复计算距离代理 |
 | **M3c** | k≤9 双向最优搜索（Node/bench only） | `optimality_ratio` 可算 |
-| **M3d** | 距离代理验证 profile：相关性、误差、逆序、局部一致性与 coverage | 确认或否决 `progress_score` 的 Kociemba 实现 |
+| **M3d** | 距离代理验证 profile：相关性、误差、逆序、局部一致性与 coverage | 已执行，**否决** `progress_score` 的 Kociemba 实现 |
 | **M3.5** | 七阶段 LBL、公式库、高亮与教程 UI | 跟练、提示、演示三种教学模式 |
 | **M4** | `bench`：任务生成、Anthropic 适配器、赛道 A、Batch 跑批 | 第一份 T1/T3 评测报告 |
 | **M5** | 赛道 B 工具循环、T6 视觉任务、HTML 聚合报告 | 完整 benchmark v1 |
 
-**M0 → M3a → M3b → M3d 是关键路径**：M3b 只提供候选距离代理，必须经过 M3d 才能进入正式指标。M2.5 与 M3.5 扩展人类可玩目标，但不阻塞 benchmark；M3c 只阻塞短打乱的真最优校准，现已完成。
+**M0 → M3a → M3b → M3d 是关键路径**：M3b 只提供候选距离代理，必须经过 M3d 才能进入正式指标。**M3d 已经走完并否决了这个代理**，所以关键路径现在卡在「换成什么」上（§9 待决 1），不再卡在「验没验」上。M2.5 与 M3.5 扩展人类可玩目标，但不阻塞 benchmark；M3c 只阻塞短打乱的真最优校准，现已完成。
 
 **当前状态（2026-08-20）：** M2 的计时器与统计已补齐（WCA 蓄力、可选观察、罚时、ao5/ao12/ao100、IndexedDB 持久化、CSV 导出），转动音效已接入；多会话管理仍未做。
 
@@ -908,7 +915,9 @@ M3a 已完成，**A/B 决策门已关闭：选方案 B（首次在 Worker 生成
 
 M3b 的两阶段搜索、朝向入口、Worker/client/IndexedDB 缓存与游戏内求解按钮已完成。10,000 个均匀随机状态（seed `0x52554243`）全部返回 `solved`；纯求解 P50 28.5 ms / P99 280 ms，Worker 往返 P50 35.5 ms / P99 271 ms。**唯一未达标的验收项是解长度中位数（21，标准是 ≤ 20）**，原因与后续选项见 DESIGN-SOLVING.md §2.9。
 
-M3c 的 k≤9 双向最优搜索已完成，`optimality_ratio` 的分母现在算得出来。球的精确层数 1/18/243/3,240/43,239/574,908 由实现复现；k=1..9 各 200 例共 3,600 次求解全部返回 `optimal` 且验证复原，两个球半径逐例给出同一距离；9 步状态 P50 6.2 ms。最优性由一份只依赖公开走法引擎的独立 oracle 逐例核对。浏览器 bundle 隔离断言同时落地。**M3d 的前置条件已经具备。**
+M3c 的 k≤9 双向最优搜索已完成，`optimality_ratio` 的分母现在算得出来。球的精确层数 1/18/243/3,240/43,239/574,908 由实现复现；k=1..9 各 200 例共 3,600 次求解全部返回 `optimal` 且验证复原，两个球半径逐例给出同一距离；9 步状态 P50 6.2 ms。最优性由一份只依赖公开走法引擎的独立 oracle 逐例核对。浏览器 bundle 隔离断言同时落地。
+
+M3d 的距离代理验证 profile 已经执行完毕，**结论是 no-go**。`/metrics` 子路径（`proxyLen`、`progress_score`、`best_progress`、两个 ratio、coverage 与四组统计量）和预注册 manifest 都已落地并 100% 覆盖，但它验证的那个代理没过门槛：三类语料 coverage 全 100%、Spearman ρ 0.9201、MAE 1.227、方向一致率 0.9611 都达标，逆序率 0.0591 与 Lipschitz 违规率 0.1583 不达标。同一份数据还表明 §9 原本预设的替代方案（PDB 下界）会饱和得更早，因此替换实现仍是待决项。完整数据见 DESIGN-SOLVING.md「M3d 实测」。
 
 ---
 
@@ -921,10 +930,13 @@ M3c 的 k≤9 双向最优搜索已完成，`optimality_ratio` 的分母现在�
 | 训练数据污染（魔方教程海量存在） | 分数虚高 | held-out 种子集 + 随机状态打乱；T1 状态预测受污染影响最小，作为主信号 |
 | 移动端 60fps 达不到 | 手感崩 | 圆角段数可降级；关闭环境贴图；按需渲染 |
 | `effort` 扫描把成本乘以 4 | 预算爆炸 | 先用 Sonnet 5 + Batch 做 effort 扫描定档位，再用定好的档位跑 Opus 5 |
+| **距离代理已被 M3d 否决**（实测：逆序率 0.0591、Lipschitz 违规率 0.1583） | `progress_score`/`best_progress`/`kociemba_ratio` 全部挂起，正式报告缺一个细粒度主指标 | 先用 `solve_rate@budget`、`htm_count`、`optimality_ratio`（k≤9，不受影响）和 T1 的 `cubie_accuracy` 出报告；细粒度指标按 §9 待决 1 重新预注册后再补 |
 
 **待决问题（需要先做实验才能定）：**
 
-1. `progress_score` 用 Kociemba 解长度是否足够可靠？唯一的 M3d manifest 固定语料类别（已知真距离、模型实际轨迹、相邻状态对）、seed、solver/table fingerprint、`hardMax`、`targetLength`、`maxNodes`、canonical move order、节点计数规则版本、最低 coverage 与 go/no-go 阈值，并统一报告 Spearman ρ、MAE、逆序率、最短解方向一致率及 `|d(s)-d(s·m)| > 1` 的 Lipschitz 违规率；无方向随机游走只作对照，不要求单调。如果噪声超过预设阈值，整体切换到角块/棱块 PDB 下界或组合指标，不能在同一指标版本里逐样本混用。**M3c 已完成，「已知真距离」那一类语料现在生成得出来了，这条问题不再有前置阻塞。**
+1. ~~`progress_score` 用 Kociemba 解长度是否足够可靠？~~ **已答：不够，M3d 判定 no-go。** 预注册 manifest 固定了三类语料（已知真距离、模型实际轨迹、相邻状态对）、seed、完整 solver profile、两个 fingerprint、最低 coverage 与全部阈值，并把阈值行一起写进被散列的文本（`sha256:0781cb57…`），跑完八条过六条：逆序率 0.0591 > 0.05、Lipschitz 违规率 0.1583 > 0.10。数据、诊断与偏差记录见 DESIGN-SOLVING.md「M3d 实测」。
+
+   **由此产生的新待决问题：`progress_score` 换成什么？** 这条不能照抄原来预设的「角块/棱块 PDB 下界」——同一份 M3d 数据表明它更差：M3a 四张剪枝表的直径是 9/9/14/12 且每张只界定一个阶段，phase-1 下界在 9 就封顶；完整角块 PDB（88,179,840 条）在 HTM 下直径 11，也远低于 18。更根本的是球的层数每层约 ×13 而全群是 4.33 × 10¹⁹，绝大多数状态挤在 17、18 两层，**距离比值这个形状本身在真实任务上就没有动态范围**。候选：(a) 结构进度——已归位且定向正确的块数（0..20）或 §3.2 的七阶段前缀阶梯，动态范围满、不依赖求解器；(b) 保留距离比值但只在被验证过的 d ≤ 9 上报告，并如实给出接近 0 的 coverage；(c) 以结构进度为主、近端换真距离的组合指标。证据倾向 (a)。选定后必须整体切换、全样本同一把尺子，并像 M3d 一样先预注册再验证。
 2. 赛道 B 的 30 次工具调用上限是否合理？先跑 10 个任务看分布再定。
 3. 三种表示（facelet / JSON / ASCII）要不要都跑？成本 ×3。建议先在 Haiku 上做小样本对照，如果差异 <5% 就只保留 facelet。
 4. T6 视觉任务两张图够不够覆盖 54 格？等轴测双视角理论上能看到全部 6 面，但边缘格子透视变形严重——可能需要三视角或正交投影。
