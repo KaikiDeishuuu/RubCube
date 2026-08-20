@@ -1075,11 +1075,64 @@ button:disabled {
   gap: 7px;
 }
 
-.key-grid > span {
+.key-cap {
   min-width: 0;
   display: flex;
   align-items: center;
   gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.key-cap kbd {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+
+.key-cap:hover kbd,
+.key-cap:focus-visible kbd {
+  color: #d8ded8;
+  border-color: rgba(255, 255, 255, 0.42);
+}
+
+.key-cap--capturing kbd {
+  color: #0b0d0c;
+  background: #adb3ad;
+  border-color: #adb3ad;
+}
+
+.keyboard-hint {
+  margin: 0 0 9px;
+  color: #6a726b;
+  font: 500 10px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.link-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #6a726b;
+  font: 600 9px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+
+.link-button:hover:not(:disabled),
+.link-button:focus-visible:not(:disabled) {
+  color: #adb3ad;
+}
+
+.link-button:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 kbd {

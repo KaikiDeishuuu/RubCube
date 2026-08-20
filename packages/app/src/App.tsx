@@ -16,7 +16,14 @@ import {
   createFaceletSvg,
   supportsWebGL,
 } from '@rubcube/cube-render/fallback';
-import { moveForKey } from '@rubcube/cube-render/keyboard';
+import {
+  DEFAULT_KEYBOARD_MOVES,
+  codesForMove,
+  keyLabelForCode,
+  moveForCode,
+  withBinding,
+  type KeyboardMoveMap,
+} from '@rubcube/cube-render/keyboard';
 import type { CubeRenderer as CubeRendererInstance } from '@rubcube/cube-render/renderer';
 import type {
   CommitDispatcher,
@@ -42,7 +49,12 @@ import {
   getRewindMoves,
   getUndoMove,
 } from './history.js';
-import { readSoundEnabled, writeSoundEnabled } from './preferences.js';
+import {
+  readKeyboardMoves,
+  readSoundEnabled,
+  writeKeyboardMoves,
+  writeSoundEnabled,
+} from './preferences.js';
 import { createSolverClient, type SolverClient } from './solver/client.js';
 import type { ReadyProgress } from './solver/protocol.js';
 import { formatStat, summarise, toCsv } from './stats.js';
@@ -67,14 +79,36 @@ const FACE_NAMES: Readonly<Record<Face, string>> = {
   B: 'Back',
 };
 
-const KEY_HINTS = [
-  ['J / F', "U / U'"],
-  ['I / K', "R / R'"],
-  ['E / D', "L / L'"],
-  ['H / G', "F / F'"],
-  ['S / L', "D / D'"],
-  ['W / O', "B / B'"],
-] as const;
+/** Every layer a key can be bound to, in the order the panel lists them. */
+const BINDABLE_LAYERS = ['U', 'R', 'L', 'F', 'D', 'B', 'M', 'E', 'S'] as const;
+
+/**
+ * Keys the app keeps for itself, which a rebind may not take.
+ *
+ * Space holds the timer and Escape aborts an attempt; binding a turn to either
+ * would make the two features fight over one press. The modifiers are here for
+ * a different reason: the turn handler ignores any press carrying one, so a
+ * binding to Shift would look accepted and then never fire.
+ */
+const RESERVED_CODES: ReadonlySet<string> = new Set([
+  'Space',
+  'Escape',
+  'Tab',
+  'Enter',
+  'NumpadEnter',
+  'ControlLeft',
+  'ControlRight',
+  'ShiftLeft',
+  'ShiftRight',
+  'AltLeft',
+  'AltRight',
+  'MetaLeft',
+  'MetaRight',
+]);
+
+interface KeyboardLayoutSource {
+  readonly keyboard?: { getLayoutMap?: () => Promise<ReadonlyMap<string, string>> };
+}
 
 /** Phases in which the cube is under the timer's control, not the player's. */
 const LOCKED_PHASES: ReadonlySet<TimerPhase> = new Set<TimerPhase>([
@@ -212,6 +246,15 @@ function App() {
   const solverRef = useRef<SolverClient | null>(null);
   const timerDigitsRef = useRef<HTMLSpanElement>(null);
   const [soundEnabled, setSoundEnabled] = useState(readSoundEnabled);
+  const [keyboardMoves, setKeyboardMoves] = useState<KeyboardMoveMap>(
+    () => readKeyboardMoves() ?? DEFAULT_KEYBOARD_MOVES,
+  );
+  /** The move whose key the next press will rebind, or null when idle. */
+  const [capturing, setCapturing] = useState<Move | null>(null);
+  const [layoutLabels, setLayoutLabels] = useState<ReadonlyMap<
+    string,
+    string
+  > | null>(null);
   const [coarsePointer, setCoarsePointer] = useState(matchesCoarsePointer);
   const [solverStatus, setSolverStatus] = useState<SolverStatus>('idle');
   const [solverDetail, setSolverDetail] = useState('Kociemba · two-phase');
@@ -458,6 +501,42 @@ function App() {
       playMoves([move], `Move · ${serializeMove(move)}`, 'manual'),
     [playMoves],
   );
+
+  useEffect(() => {
+    // Chromium only, and only in a secure context. Everywhere else the key caps
+    // keep saying what a QWERTY board would print, which is the best guess
+    // available rather than a claim about this keyboard.
+    const source = navigator as unknown as KeyboardLayoutSource;
+    if (typeof source.keyboard?.getLayoutMap !== 'function') return;
+    let cancelled = false;
+    source.keyboard
+      .getLayoutMap()
+      .then((map) => {
+        if (!cancelled) setLayoutLabels(map);
+      })
+      .catch(() => {
+        // A refused or unavailable layout map is not an error worth surfacing.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const labelForCode = useCallback(
+    (code: string): string => {
+      const fromLayout = layoutLabels?.get(code);
+      if (fromLayout === undefined || fromLayout === '') return keyLabelForCode(code);
+      // Locale-independent by specification, unlike toLocaleUpperCase.
+      return fromLayout.toUpperCase();
+    },
+    [layoutLabels],
+  );
+
+  const resetKeyboard = useCallback((): void => {
+    setCapturing(null);
+    setKeyboardMoves(DEFAULT_KEYBOARD_MOVES);
+    writeKeyboardMoves(null);
+  }, []);
 
   const undoLastMove = useCallback((): void => {
     const transport = transportRef.current;
@@ -843,6 +922,26 @@ function App() {
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.repeat) return;
       const editable = isEditableTarget(event.target);
+
+      if (capturing !== null && !editable) {
+        // Swallowed whole while capturing, so a stray press cannot turn the
+        // cube or start the timer on its way to becoming a binding.
+        event.preventDefault();
+        if (event.code === 'Escape' || event.key === 'Escape') {
+          setCapturing(null);
+          return;
+        }
+        // Anything unbindable leaves capture running rather than cancelling it:
+        // the player reached for a key, not for a way out.
+        if (event.altKey || event.ctrlKey || event.metaKey) return;
+        if (event.code === '' || RESERVED_CODES.has(event.code)) return;
+        const next = withBinding(keyboardMoves, event.code, capturing);
+        setKeyboardMoves(next);
+        writeKeyboardMoves(next);
+        setCapturing(null);
+        return;
+      }
+
       const undoShortcut =
         !event.altKey &&
         (event.ctrlKey || event.metaKey) &&
@@ -891,7 +990,7 @@ function App() {
         return;
       }
 
-      const move = moveForKey(event.key);
+      const move = moveForCode(event.code, keyboardMoves);
       if (move === null) return;
       event.preventDefault();
       // Turning during inspection would both break the rule and change the
@@ -914,7 +1013,15 @@ function App() {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [beginHold, cancelPlayback, playMove, rewindHistory, undoLastMove]);
+  }, [
+    beginHold,
+    cancelPlayback,
+    capturing,
+    keyboardMoves,
+    playMove,
+    rewindHistory,
+    undoLastMove,
+  ]);
 
   useEffect(() => {
     if (lastCommandEnd === null || lastCommandEnd.status === 'completed') return;
@@ -1468,12 +1575,51 @@ function App() {
           <section className="panel-section keyboard-section">
             <div className="section-row-heading">
               <span className="eyebrow">KEYBOARD</span>
-              <span className="legend-copy">csTimer style</span>
+              <button
+                type="button"
+                className="link-button"
+                onClick={resetKeyboard}
+                disabled={keyboardMoves === DEFAULT_KEYBOARD_MOVES}
+              >
+                恢复默认
+              </button>
             </div>
+            <p className="keyboard-hint" role="status">
+              {capturing === null
+                ? 'csTimer 键位，按物理位置绑定，换键盘布局也不会跑位。点一个键帽可以重绑。'
+                : `按下要绑定到 ${serializeMove(capturing)} 的键，Esc 取消。`}
+            </p>
             <div className="key-grid">
-              {KEY_HINTS.map(([keys, move]) => (
-                <span key={keys}><kbd>{keys}</kbd><small>{move}</small></span>
-              ))}
+              {BINDABLE_LAYERS.flatMap((layer) =>
+                ([1, 3] as const).map((turns) => {
+                  const move: Move = { face: layer, turns };
+                  const notation = serializeMove(move);
+                  const active =
+                    capturing !== null &&
+                    capturing.face === layer &&
+                    capturing.turns === turns;
+                  const codes = codesForMove(move, keyboardMoves);
+                  return (
+                    <button
+                      key={notation}
+                      type="button"
+                      className={`key-cap${active ? ' key-cap--capturing' : ''}`}
+                      aria-pressed={active}
+                      aria-label={`重新绑定 ${notation}`}
+                      onClick={() => setCapturing(active ? null : move)}
+                    >
+                      <kbd>
+                        {active
+                          ? '按键…'
+                          : codes.length === 0
+                            ? '未绑定'
+                            : codes.map(labelForCode).join(' / ')}
+                      </kbd>
+                      <small>{notation}</small>
+                    </button>
+                  );
+                }),
+              )}
             </div>
           </section>
 
